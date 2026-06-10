@@ -56,6 +56,10 @@ enum Commands {
         #[command(subcommand)]
         command: DocCommand,
     },
+    Chat {
+        #[command(subcommand)]
+        command: ChatCommand,
+    },
     Smoke {
         #[command(subcommand)]
         command: SmokeCommand,
@@ -139,6 +143,21 @@ enum GetCommand {
 #[derive(Debug, Subcommand)]
 enum DocCommand {
     Push { path: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
+enum ChatCommand {
+    Push {
+        #[arg(long, value_enum)]
+        source: ChatSource,
+        path: PathBuf,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ChatSource {
+    Codex,
+    ClaudeCode,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -318,6 +337,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
         Commands::Get { command } => handle_get(paths, command),
         Commands::Note { text } => handle_note(paths, text),
         Commands::Doc { command } => handle_doc(paths, command),
+        Commands::Chat { command } => handle_chat(paths, command),
         Commands::Smoke { command } => handle_smoke(paths, command),
         Commands::Sync { command } => handle_sync(paths, command),
         Commands::Completions { shell } => {
@@ -569,6 +589,44 @@ fn handle_doc(paths: &Paths, command: DocCommand) -> Result<()> {
                 api.post_json("/v1/memory/documents", &request)?;
             println!(
                 "Ingested document {title} as document {}",
+                response.document_id
+            );
+            Ok(())
+        }
+    }
+}
+
+fn handle_chat(paths: &Paths, command: ChatCommand) -> Result<()> {
+    match command {
+        ChatCommand::Push { source, path } => {
+            let config = Config::load(paths)?;
+            let (_, profile) = config.active_profile()?;
+            let token = config.required_token(paths, profile)?;
+            let api = ApiClient::new(&profile.api_url, Some(token));
+            let filename = file_name(&path)?;
+            let title = format!("{} chat log {filename}", source.as_str());
+            let raw = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            let transcript = normalize_chat_log(source, &raw);
+            let mut request = memory_document_request(
+                profile,
+                &title,
+                "chat_log",
+                "application/x-ndjson",
+                &transcript,
+                Some(&path),
+            );
+            if let Value::Object(metadata) = &mut request.metadata {
+                metadata.insert(
+                    "chat_source".to_string(),
+                    Value::String(source.as_str().to_string()),
+                );
+            }
+            let response: MemoryDocumentResponse =
+                api.post_json("/v1/memory/documents", &request)?;
+            println!(
+                "Uploaded {} chat log {filename} as document {}",
+                source.as_str(),
                 response.document_id
             );
             Ok(())
@@ -868,10 +926,10 @@ fn memory_document_request(
     content: &str,
     source_path: Option<&Path>,
 ) -> MemoryDocumentRequest {
-    let body_label = if source_type == "note" {
-        "Note"
-    } else {
-        "Document"
+    let body_label = match source_type {
+        "note" => "Note",
+        "chat_log" => "Chat Log",
+        _ => "Document",
     };
     let text = format!("{}\n{body_label}:\n{content}", context_preamble(profile));
     let metadata = serde_json::json!({
@@ -1058,6 +1116,132 @@ fn print_documents(body: &Value) {
     }
 }
 
+fn normalize_chat_log(source: ChatSource, raw: &str) -> String {
+    let mut entries = Vec::new();
+
+    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        match serde_json::from_str::<Value>(line) {
+            Ok(value) => {
+                if let Some(entry) = chat_entry_text(source, &value) {
+                    entries.push(entry);
+                }
+            }
+            Err(_) => entries.push(format!("[{} raw]\n{line}", source.as_str())),
+        }
+    }
+
+    if entries.is_empty() {
+        raw.trim().to_string()
+    } else {
+        entries.join("\n\n")
+    }
+}
+
+fn chat_entry_text(source: ChatSource, value: &Value) -> Option<String> {
+    match source {
+        ChatSource::Codex => codex_entry_text(value),
+        ChatSource::ClaudeCode => claude_code_entry_text(value),
+    }
+}
+
+fn codex_entry_text(value: &Value) -> Option<String> {
+    let entry_type = value.get("type").and_then(Value::as_str).unwrap_or("entry");
+    let payload = value.get("payload").unwrap_or(value);
+
+    if entry_type == "session_meta" {
+        let mut fields = Vec::new();
+        if let Some(id) = payload.get("id").and_then(Value::as_str) {
+            fields.push(format!("id: {id}"));
+        }
+        if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+            fields.push(format!("cwd: {cwd}"));
+        }
+        return (!fields.is_empty()).then(|| format!("[codex session]\n{}", fields.join("\n")));
+    }
+
+    let role = payload
+        .get("role")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            payload
+                .get("message")
+                .and_then(|message| message.get("role"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or(entry_type);
+
+    let content = payload
+        .get("content")
+        .or_else(|| payload.get("text"))
+        .or_else(|| {
+            payload
+                .get("message")
+                .and_then(|message| message.get("content").or_else(|| message.get("text")))
+        })
+        .or_else(|| payload.get("message"))?;
+    let text = extract_chat_text(content)?;
+    Some(format!("[codex {role}]\n{text}"))
+}
+
+fn claude_code_entry_text(value: &Value) -> Option<String> {
+    let entry_type = value.get("type").and_then(Value::as_str).unwrap_or("entry");
+
+    if entry_type == "attachment" {
+        return claude_attachment_text(value);
+    }
+
+    let message = value.get("message").unwrap_or(value);
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or(entry_type);
+    let content = message
+        .get("content")
+        .or_else(|| message.get("text"))
+        .or_else(|| value.get("content"))
+        .or_else(|| value.get("text"))?;
+    let text = extract_chat_text(content)?;
+    Some(format!("[claude-code {role}]\n{text}"))
+}
+
+fn claude_attachment_text(value: &Value) -> Option<String> {
+    let mut fields = Vec::new();
+    for field in ["command", "content", "stdout", "stderr"] {
+        if let Some(text) = value.get(field).and_then(Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                fields.push(format!("{field}: {text}"));
+            }
+        }
+    }
+    (!fields.is_empty()).then(|| format!("[claude-code attachment]\n{}", fields.join("\n")))
+}
+
+fn extract_chat_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => non_empty_text(text),
+        Value::Array(items) => {
+            let parts: Vec<String> = items.iter().filter_map(extract_chat_text).collect();
+            (!parts.is_empty()).then(|| parts.join("\n"))
+        }
+        Value::Object(object) => object
+            .get("text")
+            .and_then(extract_chat_text)
+            .or_else(|| object.get("content").and_then(extract_chat_text))
+            .or_else(|| {
+                let kind = object.get("type").and_then(Value::as_str)?;
+                let name = object.get("name").and_then(Value::as_str)?;
+                Some(format!("[{kind} {name}]"))
+            }),
+        _ => None,
+    }
+}
+
+fn non_empty_text(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 fn item_id(item: &Value) -> String {
     item.get("id")
         .and_then(Value::as_i64)
@@ -1224,6 +1408,15 @@ impl TokenStore {
         match self {
             TokenStore::Keyring => "keyring",
             TokenStore::File => "file",
+        }
+    }
+}
+
+impl ChatSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            ChatSource::Codex => "codex",
+            ChatSource::ClaudeCode => "claude-code",
         }
     }
 }

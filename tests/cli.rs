@@ -358,6 +358,120 @@ fn doc_push_reads_file_and_posts_document_to_memory_pipeline() {
 }
 
 #[test]
+fn chat_push_codex_log_posts_normalized_transcript_to_memory_documents() {
+    let mut server = mockito::Server::new();
+    let ingest = server
+        .mock("POST", "/v1/memory/documents")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::Regex(r#""title":"codex chat log codex-session.jsonl""#.to_string()),
+            Matcher::Regex(r#""source_type":"chat_log""#.to_string()),
+            Matcher::Regex(r#""media_type":"application/x-ndjson""#.to_string()),
+            Matcher::Regex(r#""chat_source":"codex""#.to_string()),
+            Matcher::Regex(r#""subjects":\["FastAPI"\]"#.to_string()),
+            Matcher::Regex(r#"Chat Log:\\n"#.to_string()),
+            Matcher::Regex("Please inspect the API".to_string()),
+            Matcher::Regex("The API is healthy".to_string()),
+        ]))
+        .with_status(201)
+        .with_body(r#"{"document_id":301,"edges":[]}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+    malu(&config_dir)
+        .args(["subjects", "add", "FastAPI"])
+        .assert()
+        .success();
+    let chat_path = config_dir.path().join("codex-session.jsonl");
+    std::fs::write(
+        &chat_path,
+        concat!(
+            r#"{"type":"session_meta","timestamp":"2026-06-10T00:00:00Z","payload":{"id":"codex-1","cwd":"/repo"}}"#,
+            "\n",
+            r#"{"type":"response_item","timestamp":"2026-06-10T00:00:01Z","payload":{"role":"user","content":[{"type":"input_text","text":"Please inspect the API"}]}}"#,
+            "\n",
+            r#"{"type":"response_item","timestamp":"2026-06-10T00:00:02Z","payload":{"role":"assistant","content":[{"type":"output_text","text":"The API is healthy"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    malu(&config_dir)
+        .args([
+            "chat",
+            "push",
+            "--source",
+            "codex",
+            chat_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Uploaded codex chat log codex-session.jsonl as document 301",
+        ));
+
+    ingest.assert();
+}
+
+#[test]
+fn chat_push_claude_code_log_posts_normalized_transcript_to_memory_documents() {
+    let mut server = mockito::Server::new();
+    let ingest = server
+        .mock("POST", "/v1/memory/documents")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::Regex(r#""title":"claude-code chat log claude-session.jsonl""#.to_string()),
+            Matcher::Regex(r#""source_type":"chat_log""#.to_string()),
+            Matcher::Regex(r#""media_type":"application/x-ndjson""#.to_string()),
+            Matcher::Regex(r#""chat_source":"claude-code""#.to_string()),
+            Matcher::Regex(r#""subjects":\["FastAPI"\]"#.to_string()),
+            Matcher::Regex(r#"Chat Log:\\n"#.to_string()),
+            Matcher::Regex("Summarize this bug".to_string()),
+            Matcher::Regex("The bug is in auth".to_string()),
+        ]))
+        .with_status(201)
+        .with_body(r#"{"document_id":302,"edges":[]}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+    malu(&config_dir)
+        .args(["subjects", "add", "FastAPI"])
+        .assert()
+        .success();
+    let chat_path = config_dir.path().join("claude-session.jsonl");
+    std::fs::write(
+        &chat_path,
+        concat!(
+            r#"{"type":"user","timestamp":"2026-06-10T00:00:00Z","sessionId":"claude-1","message":{"role":"user","content":"Summarize this bug"}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-06-10T00:00:01Z","sessionId":"claude-1","message":{"role":"assistant","content":[{"type":"text","text":"The bug is in auth"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    malu(&config_dir)
+        .args([
+            "chat",
+            "push",
+            "--source",
+            "claude-code",
+            chat_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Uploaded claude-code chat log claude-session.jsonl as document 302",
+        ));
+
+    ingest.assert();
+}
+
+#[test]
 fn smoke_search_posts_query_with_compartment_filter() {
     let mut server = mockito::Server::new();
     let search = server

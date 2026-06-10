@@ -43,6 +43,8 @@ malu get documents --with attributes
 
 malu note "Starting to debug the maludb api"
 malu doc push ./debug-log.md
+malu chat push --source codex ~/.codex/sessions/YYYY/MM/DD/session.jsonl
+malu chat push --source claude-code ~/.claude/projects/project/session.jsonl
 
 malu smoke health
 malu smoke config
@@ -59,9 +61,11 @@ malu sync diff
 malu completions bash > malu.bash
 ```
 
-Notes and document pushes use `POST /v1/memory/documents`, include a context
-preamble in the submitted text, pass active subjects as API subjects, and store
-active hints in metadata.
+Notes, document pushes, and chat log uploads use `POST /v1/memory/documents`,
+include a context preamble in the submitted text, pass active subjects as API
+subjects, and store active hints in metadata. Chat logs from Codex and Claude
+Code are normalized into readable transcripts before upload and tagged with
+their original source in metadata.
 
 Tokens are stored in the platform keyring by default. Use `--store file` on
 headless systems; file credentials are stored separately from `config.toml` and
