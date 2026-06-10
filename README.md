@@ -1,6 +1,6 @@
-# maludb-cli
+# maludb-terminal
 
-`malu` is a command-first Rust CLI for sending notes, documents, and smoke-test
+`malu` is a command-first Rust terminal CLI for sending notes, documents, and smoke-test
 workflows to the MaluDB API.
 
 ## Current Slice
