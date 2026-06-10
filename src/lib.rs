@@ -1,0 +1,1062 @@
+use anyhow::{Context, Result, bail};
+use chrono::Utc;
+use clap::{Parser, Subcommand, ValueEnum};
+use directories::ProjectDirs;
+use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Parser)]
+#[command(name = "malu", about = "Send notes and smoke-test workflows to MaluDB")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    SetApi {
+        api_url: String,
+    },
+    SetToken {
+        token: String,
+        #[arg(long, value_enum, default_value_t = TokenStore::File)]
+        store: TokenStore,
+    },
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+    Subjects {
+        #[command(subcommand)]
+        command: ListCommand,
+    },
+    Hints {
+        #[command(subcommand)]
+        command: ListCommand,
+    },
+    Get {
+        #[command(subcommand)]
+        command: GetCommand,
+    },
+    Note {
+        text: String,
+    },
+    Doc {
+        #[command(subcommand)]
+        command: DocCommand,
+    },
+    Smoke {
+        #[command(subcommand)]
+        command: SmokeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProfileCommand {
+    Create {
+        name: String,
+        #[arg(long, default_value = "https://api.maludb.org")]
+        api_url: String,
+        #[arg(long)]
+        user_name: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value = "default")]
+        namespace: String,
+    },
+    Use {
+        name: String,
+    },
+    List,
+    Show,
+    Delete {
+        name: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ListCommand {
+    Add { value: String },
+    List,
+    Clear,
+}
+
+#[derive(Debug, Subcommand)]
+enum GetCommand {
+    Config,
+    Subjects,
+    Projects,
+    Documents,
+}
+
+#[derive(Debug, Subcommand)]
+enum DocCommand {
+    Push { path: PathBuf },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum TokenStore {
+    File,
+}
+
+#[derive(Debug, Subcommand)]
+enum SmokeCommand {
+    Health,
+    Config,
+    Note,
+    Document {
+        path: PathBuf,
+    },
+    Search {
+        #[arg(long)]
+        query: String,
+        #[arg(long)]
+        subject: Option<String>,
+        #[arg(long)]
+        verb: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: u16,
+    },
+    Full,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct Config {
+    active_profile: Option<String>,
+    #[serde(default)]
+    profiles: BTreeMap<String, Profile>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Profile {
+    api_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    namespace: String,
+    #[serde(default)]
+    subjects: Vec<String>,
+    #[serde(default)]
+    hints: Vec<String>,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ErrorEnvelope {
+    error: ServerError,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerError {
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct Credentials {
+    #[serde(default)]
+    tokens: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryDocumentRequest {
+    title: String,
+    text: String,
+    namespace: String,
+    source_type: String,
+    media_type: Option<String>,
+    metadata: Value,
+    projects: Vec<String>,
+    subjects: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edges: Option<Vec<MemoryEdge>>,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryEdge {
+    subject_text: String,
+    verb_text: String,
+    predicate: Vec<String>,
+    subject_type: String,
+    source_span: String,
+    confidence: f32,
+    provenance: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MemoryDocumentResponse {
+    document_id: i64,
+}
+
+pub fn run() -> Result<()> {
+    let cli = Cli::parse();
+    let paths = Paths::discover()?;
+    handle(cli.command, &paths)
+}
+
+fn handle(command: Commands, paths: &Paths) -> Result<()> {
+    match command {
+        Commands::SetApi { api_url } => set_api(paths, api_url),
+        Commands::SetToken { token, store } => set_token(paths, token, store),
+        Commands::Profile { command } => handle_profile(paths, command),
+        Commands::Subjects { command } => handle_collection(paths, command, Collection::Subjects),
+        Commands::Hints { command } => handle_collection(paths, command, Collection::Hints),
+        Commands::Get { command } => handle_get(paths, command),
+        Commands::Note { text } => handle_note(paths, text),
+        Commands::Doc { command } => handle_doc(paths, command),
+        Commands::Smoke { command } => handle_smoke(paths, command),
+    }
+}
+
+fn set_api(paths: &Paths, api_url: String) -> Result<()> {
+    let mut config = Config::load(paths)?;
+    let active = match config.active_profile.clone() {
+        Some(name) => name,
+        None => {
+            let name = "default".to_string();
+            config.active_profile = Some(name.clone());
+            config
+                .profiles
+                .insert(name.clone(), Profile::new(api_url.clone()));
+            name
+        }
+    };
+
+    let profile = config
+        .profiles
+        .get_mut(&active)
+        .context("active profile is missing from config")?;
+    profile.api_url = api_url;
+    profile.touch();
+    config.save(paths)?;
+    println!("Updated API URL for profile {active}");
+    Ok(())
+}
+
+fn set_token(paths: &Paths, token: String, store: TokenStore) -> Result<()> {
+    match store {
+        TokenStore::File => {
+            let mut config = Config::load(paths)?;
+            let (profile_name, token_key) = {
+                let (profile_name, profile) = config.active_profile_mut()?;
+                profile.token_key = Some(profile_name.clone());
+                profile.touch();
+                (profile_name.clone(), profile_name)
+            };
+
+            let mut credentials = Credentials::load(paths)?;
+            credentials.tokens.insert(token_key, token);
+            credentials.save(paths)?;
+            config.save(paths)?;
+            println!("Stored token for profile {profile_name} in file credential store");
+            Ok(())
+        }
+    }
+}
+
+fn handle_profile(paths: &Paths, command: ProfileCommand) -> Result<()> {
+    match command {
+        ProfileCommand::Create {
+            name,
+            api_url,
+            user_name,
+            project,
+            namespace,
+        } => {
+            let mut config = Config::load(paths)?;
+            if config.profiles.contains_key(&name) {
+                bail!("Profile {name} already exists");
+            }
+
+            let mut profile = Profile::new(api_url);
+            profile.user_name = user_name;
+            profile.project = project;
+            profile.namespace = namespace;
+            config.profiles.insert(name.clone(), profile);
+            if config.active_profile.is_none() {
+                config.active_profile = Some(name.clone());
+            }
+            config.save(paths)?;
+            println!("Created profile {name}");
+            Ok(())
+        }
+        ProfileCommand::Use { name } => {
+            let mut config = Config::load(paths)?;
+            if !config.profiles.contains_key(&name) {
+                bail!("Profile {name} does not exist");
+            }
+            config.active_profile = Some(name.clone());
+            config.save(paths)?;
+            println!("Using profile {name}");
+            Ok(())
+        }
+        ProfileCommand::List => {
+            let config = Config::load(paths)?;
+            if config.profiles.is_empty() {
+                println!("No profiles configured");
+                return Ok(());
+            }
+
+            for name in config.profiles.keys() {
+                let marker = if config.active_profile.as_deref() == Some(name.as_str()) {
+                    "*"
+                } else {
+                    " "
+                };
+                println!("{marker} {name}");
+            }
+            Ok(())
+        }
+        ProfileCommand::Show => {
+            let config = Config::load(paths)?;
+            let (name, profile) = config.active_profile()?;
+            print_profile(name, profile);
+            Ok(())
+        }
+        ProfileCommand::Delete { name } => {
+            let mut config = Config::load(paths)?;
+            if config.profiles.remove(&name).is_none() {
+                bail!("Profile {name} does not exist");
+            }
+            if config.active_profile.as_deref() == Some(name.as_str()) {
+                config.active_profile = config.profiles.keys().next().cloned();
+            }
+            config.save(paths)?;
+            println!("Deleted profile {name}");
+            Ok(())
+        }
+    }
+}
+
+fn handle_note(paths: &Paths, text: String) -> Result<()> {
+    let config = Config::load(paths)?;
+    let (_, profile) = config.active_profile()?;
+    let token = config.required_token(paths, profile)?;
+    let api = ApiClient::new(&profile.api_url, Some(token));
+    let request = memory_document_request(profile, "CLI note", "note", "text/plain", &text, None);
+    let response: MemoryDocumentResponse = api.post_json("/v1/memory/documents", &request)?;
+    println!("Ingested note as document {}", response.document_id);
+    Ok(())
+}
+
+fn handle_get(paths: &Paths, command: GetCommand) -> Result<()> {
+    let config = Config::load(paths)?;
+    let (_, profile) = config.active_profile()?;
+    let token = config.required_token(paths, profile)?;
+    let api = ApiClient::new(&profile.api_url, Some(token));
+
+    match command {
+        GetCommand::Config => {
+            let body = api.get_json("/v1/memory/config")?;
+            let namespace = string_field(&body, "namespace", "default");
+            let config = body.get("config").unwrap_or(&Value::Null);
+            println!("Memory config {namespace} {}", compact_json(config));
+            Ok(())
+        }
+        GetCommand::Subjects => {
+            let body = api.get_json("/v1/subjects")?;
+            print_subjects(&body);
+            Ok(())
+        }
+        GetCommand::Projects => {
+            let body = api.get_json("/v1/projects")?;
+            print_named_items(&body, "projects", "name");
+            Ok(())
+        }
+        GetCommand::Documents => {
+            let body = api.get_json("/v1/documents")?;
+            print_documents(&body);
+            Ok(())
+        }
+    }
+}
+
+fn handle_doc(paths: &Paths, command: DocCommand) -> Result<()> {
+    match command {
+        DocCommand::Push { path } => {
+            let config = Config::load(paths)?;
+            let (_, profile) = config.active_profile()?;
+            let token = config.required_token(paths, profile)?;
+            let api = ApiClient::new(&profile.api_url, Some(token));
+            let title = file_name(&path)?;
+            let text = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            let media_type = mime_guess::from_path(&path)
+                .first_or_text_plain()
+                .essence_str()
+                .to_string();
+            let request = memory_document_request(
+                profile,
+                &title,
+                "document",
+                &media_type,
+                &text,
+                Some(&path),
+            );
+            let response: MemoryDocumentResponse =
+                api.post_json("/v1/memory/documents", &request)?;
+            println!(
+                "Ingested document {title} as document {}",
+                response.document_id
+            );
+            Ok(())
+        }
+    }
+}
+
+fn handle_collection(paths: &Paths, command: ListCommand, collection: Collection) -> Result<()> {
+    let mut config = Config::load(paths)?;
+    let (_, profile) = config.active_profile_mut()?;
+    let values = collection.values_mut(profile);
+
+    match command {
+        ListCommand::Add { value } => {
+            if !values.contains(&value) {
+                values.push(value.clone());
+                profile.touch();
+                config.save(paths)?;
+            }
+            println!("Added {} {value}", collection.singular());
+        }
+        ListCommand::List => {
+            if values.is_empty() {
+                println!("No {} configured", collection.plural());
+            } else {
+                println!("{}", values.join("\n"));
+            }
+        }
+        ListCommand::Clear => {
+            values.clear();
+            profile.touch();
+            config.save(paths)?;
+            println!("Cleared {}", collection.plural());
+        }
+    }
+    Ok(())
+}
+
+fn handle_smoke(paths: &Paths, command: SmokeCommand) -> Result<()> {
+    let config = Config::load(paths)?;
+    let (_, profile) = config.active_profile()?;
+
+    match command {
+        SmokeCommand::Health => {
+            let api = ApiClient::new(&profile.api_url, None);
+            let body = api.get_json("/health")?;
+            let status = body
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            println!("PASS health {status}");
+            Ok(())
+        }
+        SmokeCommand::Config => {
+            let token = config.required_token(paths, profile)?;
+            let api = ApiClient::new(&profile.api_url, Some(token));
+            let body = api.get_json("/v1/memory/config")?;
+            println!("PASS config {}", compact_json(&body));
+            Ok(())
+        }
+        SmokeCommand::Note => {
+            let token = config.required_token(paths, profile)?;
+            let api = ApiClient::new(&profile.api_url, Some(token));
+            let smoke_subject = smoke_subject_from_profile(profile);
+            let note = ingest_smoke_note(&api, profile, &smoke_subject, &now())?;
+            println!("PASS note document {}", note.document_id);
+            Ok(())
+        }
+        SmokeCommand::Document { path } => {
+            let token = config.required_token(paths, profile)?;
+            let api = ApiClient::new(&profile.api_url, Some(token));
+            let smoke_subject = smoke_subject_from_profile(profile);
+            let document =
+                ingest_smoke_document(&api, profile, &smoke_subject, &now(), Some(&path))?;
+            println!("PASS document {}", document.document_id);
+            Ok(())
+        }
+        SmokeCommand::Search {
+            query,
+            subject,
+            verb,
+            limit,
+        } => {
+            let token = config.required_token(paths, profile)?;
+            let api = ApiClient::new(&profile.api_url, Some(token));
+            let subject = subject.or_else(|| profile.subjects.first().cloned());
+            if subject.is_none() && verb.is_none() {
+                bail!("smoke search requires --subject, --verb, or an active profile subject");
+            }
+
+            let body = serde_json::json!({
+                "query": query,
+                "namespace": profile.namespace,
+                "subject": subject,
+                "verb": verb,
+                "limit": limit,
+            });
+            let response = api.post_value("/v1/memory/search", &body)?;
+            let count = response
+                .get("results")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            let label = if count == 1 { "result" } else { "results" };
+            println!("PASS search {count} {label}");
+            Ok(())
+        }
+        SmokeCommand::Full => smoke_full(paths, &config, profile),
+    }
+}
+
+fn smoke_full(paths: &Paths, config: &Config, profile: &Profile) -> Result<()> {
+    let public_api = ApiClient::new(&profile.api_url, None);
+    let health = public_api.get_json("/health")?;
+    let health_status = health
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    println!("PASS health {health_status}");
+
+    let token = config.required_token(paths, profile)?;
+    let api = ApiClient::new(&profile.api_url, Some(token));
+
+    let subjects = api.get_json("/v1/subjects")?;
+    let subject_count = array_len(&subjects, "subjects");
+    println!("PASS auth subjects {subject_count}");
+
+    let memory_config = api.get_json("/v1/memory/config")?;
+    let namespace = string_field(&memory_config, "namespace", &profile.namespace);
+    println!("PASS config {namespace}");
+
+    let smoke_subject = smoke_subject(profile, &subjects);
+    let stamp = now();
+    let note = ingest_smoke_note(&api, profile, &smoke_subject, &stamp)?;
+    println!("PASS note document {}", note.document_id);
+
+    let document = ingest_smoke_document(&api, profile, &smoke_subject, &stamp, None)?;
+    println!("PASS document {}", document.document_id);
+
+    let search_body = serde_json::json!({
+        "query": format!("Malu CLI smoke {stamp}"),
+        "namespace": profile.namespace,
+        "subject": smoke_subject,
+        "limit": 20,
+    });
+    let search = api.post_value("/v1/memory/search", &search_body)?;
+    let count = array_len(&search, "results");
+    let label = if count == 1 { "result" } else { "results" };
+    println!("PASS search {count} {label}");
+    Ok(())
+}
+
+fn ingest_smoke_note(
+    api: &ApiClient,
+    profile: &Profile,
+    smoke_subject: &str,
+    stamp: &str,
+) -> Result<MemoryDocumentResponse> {
+    let note_text = format!("Malu CLI smoke note generated at {stamp}");
+    let mut request = memory_document_request(
+        profile,
+        "malu smoke note",
+        "note",
+        "text/plain",
+        &note_text,
+        None,
+    );
+    ensure_subject(&mut request, smoke_subject);
+    request.edges = Some(vec![smoke_edge(smoke_subject, "recorded", &note_text)]);
+    api.post_json("/v1/memory/documents", &request)
+}
+
+fn ingest_smoke_document(
+    api: &ApiClient,
+    profile: &Profile,
+    smoke_subject: &str,
+    stamp: &str,
+    path: Option<&Path>,
+) -> Result<MemoryDocumentResponse> {
+    let (title, media_type, text, source_path) = match path {
+        Some(path) => {
+            let title = file_name(path)?;
+            let text = fs::read_to_string(path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            let media_type = mime_guess::from_path(path)
+                .first_or_text_plain()
+                .essence_str()
+                .to_string();
+            (title, media_type, text, Some(path))
+        }
+        None => (
+            "malu-smoke-document.md".to_string(),
+            "text/markdown".to_string(),
+            format!("# Malu CLI smoke document\n\nGenerated at {stamp}.\n"),
+            None,
+        ),
+    };
+
+    let mut request =
+        memory_document_request(profile, &title, "document", &media_type, &text, source_path);
+    ensure_subject(&mut request, smoke_subject);
+    request.edges = Some(vec![smoke_edge(smoke_subject, "documented", &text)]);
+    api.post_json("/v1/memory/documents", &request)
+}
+
+fn memory_document_request(
+    profile: &Profile,
+    title: &str,
+    source_type: &str,
+    media_type: &str,
+    content: &str,
+    source_path: Option<&Path>,
+) -> MemoryDocumentRequest {
+    let body_label = if source_type == "note" {
+        "Note"
+    } else {
+        "Document"
+    };
+    let text = format!("{}\n{body_label}:\n{content}", context_preamble(profile));
+    let metadata = serde_json::json!({
+        "source": "malu-cli",
+        "source_type": source_type,
+        "hints": profile.hints,
+        "user_name": profile.user_name,
+        "project": profile.project,
+        "source_path": source_path.map(|path| path.display().to_string()),
+        "created_at": now(),
+    });
+
+    MemoryDocumentRequest {
+        title: title.to_string(),
+        text,
+        namespace: profile.namespace.clone(),
+        source_type: source_type.to_string(),
+        media_type: Some(media_type.to_string()),
+        metadata,
+        projects: profile.project.iter().cloned().collect(),
+        subjects: profile.subjects.clone(),
+        edges: None,
+    }
+}
+
+fn smoke_edge(subject: &str, verb: &str, source_span: &str) -> MemoryEdge {
+    MemoryEdge {
+        subject_text: subject.to_string(),
+        verb_text: verb.to_string(),
+        predicate: Vec::new(),
+        subject_type: "other".to_string(),
+        source_span: source_span.to_string(),
+        confidence: 1.0,
+        provenance: "provided".to_string(),
+    }
+}
+
+fn smoke_subject(profile: &Profile, subjects: &Value) -> String {
+    profile
+        .subjects
+        .first()
+        .cloned()
+        .or_else(|| {
+            subjects
+                .get("subjects")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("label"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| profile.project.clone())
+        .unwrap_or_else(|| "malu smoke".to_string())
+}
+
+fn smoke_subject_from_profile(profile: &Profile) -> String {
+    profile
+        .subjects
+        .first()
+        .cloned()
+        .or_else(|| profile.project.clone())
+        .unwrap_or_else(|| "malu smoke".to_string())
+}
+
+fn ensure_subject(request: &mut MemoryDocumentRequest, subject: &str) {
+    if !request.subjects.iter().any(|value| value == subject) {
+        request.subjects.push(subject.to_string());
+    }
+}
+
+fn context_preamble(profile: &Profile) -> String {
+    format!(
+        "Context:\n- User: {}\n- Time: {}\n- Project: {}\n- Subjects: {}\n- Hints: {}\n",
+        profile.user_name.as_deref().unwrap_or("(unset)"),
+        now(),
+        profile.project.as_deref().unwrap_or("(unset)"),
+        display_list(&profile.subjects),
+        display_list(&profile.hints)
+    )
+}
+
+fn file_name(path: &Path) -> Result<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+        .with_context(|| format!("{} does not have a valid file name", path.display()))
+}
+
+fn print_profile(name: &str, profile: &Profile) {
+    println!("Profile: {name}");
+    println!("API URL: {}", profile.api_url);
+    println!(
+        "User: {}",
+        profile.user_name.as_deref().unwrap_or("(unset)")
+    );
+    println!(
+        "Project: {}",
+        profile.project.as_deref().unwrap_or("(unset)")
+    );
+    println!("Namespace: {}", profile.namespace);
+    println!("Subjects: {}", display_list(&profile.subjects));
+    println!("Hints: {}", display_list(&profile.hints));
+}
+
+fn display_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "(none)".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn print_subjects(body: &Value) {
+    let Some(subjects) = body.get("subjects").and_then(Value::as_array) else {
+        println!("No subjects returned");
+        return;
+    };
+
+    if subjects.is_empty() {
+        println!("No subjects returned");
+        return;
+    }
+
+    for subject in subjects {
+        let id = item_id(subject);
+        let label = string_field(subject, "label", "(unnamed)");
+        let kind = string_field(subject, "type", "unknown");
+        println!("{id} {label} subject {kind}");
+    }
+}
+
+fn print_named_items(body: &Value, envelope: &str, name_field: &str) {
+    let Some(items) = body.get(envelope).and_then(Value::as_array) else {
+        println!("No {envelope} returned");
+        return;
+    };
+
+    if items.is_empty() {
+        println!("No {envelope} returned");
+        return;
+    }
+
+    for item in items {
+        let id = item_id(item);
+        let name = string_field(item, name_field, "(unnamed)");
+        println!("{id} {name}");
+    }
+}
+
+fn print_documents(body: &Value) {
+    let Some(documents) = body.get("documents").and_then(Value::as_array) else {
+        println!("No documents returned");
+        return;
+    };
+
+    if documents.is_empty() {
+        println!("No documents returned");
+        return;
+    }
+
+    for document in documents {
+        let id = item_id(document);
+        let title = string_field(document, "title", "(untitled)");
+        let source_type = string_field(document, "source_type", "document");
+        println!("{id} {title} {source_type}");
+    }
+}
+
+fn item_id(item: &Value) -> String {
+    item.get("id")
+        .and_then(Value::as_i64)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "?".to_string())
+}
+
+fn string_field(value: &Value, field: &str, default: &str) -> String {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn array_len(value: &Value, field: &str) -> usize {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+fn compact_json(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
+}
+
+#[derive(Clone, Copy)]
+enum Collection {
+    Subjects,
+    Hints,
+}
+
+impl Collection {
+    fn values_mut(self, profile: &mut Profile) -> &mut Vec<String> {
+        match self {
+            Collection::Subjects => &mut profile.subjects,
+            Collection::Hints => &mut profile.hints,
+        }
+    }
+
+    fn singular(self) -> &'static str {
+        match self {
+            Collection::Subjects => "subject",
+            Collection::Hints => "hint",
+        }
+    }
+
+    fn plural(self) -> &'static str {
+        match self {
+            Collection::Subjects => "subjects",
+            Collection::Hints => "hints",
+        }
+    }
+}
+
+struct ApiClient {
+    base_url: String,
+    token: Option<String>,
+    client: Client,
+}
+
+impl ApiClient {
+    fn new(base_url: &str, token: Option<String>) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            token,
+            client: Client::new(),
+        }
+    }
+
+    fn get_json(&self, path: &str) -> Result<Value> {
+        let response = self
+            .request(reqwest::Method::GET, path)
+            .send()
+            .context("failed to send API request")?;
+        decode_response(response)
+    }
+
+    fn post_value(&self, path: &str, body: &Value) -> Result<Value> {
+        let response = self
+            .request(reqwest::Method::POST, path)
+            .json(body)
+            .send()
+            .context("failed to send API request")?;
+        decode_response(response)
+    }
+
+    fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<R> {
+        let response = self
+            .request(reqwest::Method::POST, path)
+            .json(body)
+            .send()
+            .context("failed to send API request")?;
+        let value = decode_response(response)?;
+        serde_json::from_value(value).context("failed to parse API response")
+    }
+
+    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::blocking::RequestBuilder {
+        let url = format!("{}{}", self.base_url, path);
+        let request = self.client.request(method, url);
+        match &self.token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
+    }
+}
+
+fn decode_response(response: reqwest::blocking::Response) -> Result<Value> {
+    let status = response.status();
+    let body = response.text().context("failed to read API response")?;
+
+    if !status.is_success() {
+        if let Ok(envelope) = serde_json::from_str::<ErrorEnvelope>(&body) {
+            bail!(
+                "API error {}: {}",
+                envelope.error.code,
+                envelope.error.message
+            );
+        }
+        bail!("API error HTTP {status}: {body}");
+    }
+
+    serde_json::from_str(&body).context("failed to parse API response as JSON")
+}
+
+impl Config {
+    fn load(paths: &Paths) -> Result<Self> {
+        if !paths.config_file.exists() {
+            return Ok(Self::default());
+        }
+
+        let contents = fs::read_to_string(&paths.config_file)
+            .with_context(|| format!("failed to read {}", paths.config_file.display()))?;
+        toml::from_str(&contents)
+            .with_context(|| format!("failed to parse {}", paths.config_file.display()))
+    }
+
+    fn save(&self, paths: &Paths) -> Result<()> {
+        fs::create_dir_all(&paths.config_dir)
+            .with_context(|| format!("failed to create {}", paths.config_dir.display()))?;
+        let contents = toml::to_string_pretty(self).context("failed to serialize config")?;
+        fs::write(&paths.config_file, contents)
+            .with_context(|| format!("failed to write {}", paths.config_file.display()))
+    }
+
+    fn active_profile(&self) -> Result<(&str, &Profile)> {
+        let name = self
+            .active_profile
+            .as_deref()
+            .context("No active profile. Run `malu profile create <name>` first.")?;
+        let profile = self
+            .profiles
+            .get(name)
+            .with_context(|| format!("Active profile {name} is missing from config"))?;
+        Ok((name, profile))
+    }
+
+    fn active_profile_mut(&mut self) -> Result<(String, &mut Profile)> {
+        let name = self
+            .active_profile
+            .clone()
+            .context("No active profile. Run `malu profile create <name>` first.")?;
+        let profile = self
+            .profiles
+            .get_mut(&name)
+            .with_context(|| format!("Active profile {name} is missing from config"))?;
+        Ok((name, profile))
+    }
+
+    fn required_token(&self, paths: &Paths, profile: &Profile) -> Result<String> {
+        let token_key = profile
+            .token_key
+            .as_deref()
+            .context("No token configured. Run `malu set-token <token>` first.")?;
+        let credentials = Credentials::load(paths)?;
+        credentials
+            .tokens
+            .get(token_key)
+            .cloned()
+            .with_context(|| format!("No token found for key {token_key}"))
+    }
+}
+
+impl Credentials {
+    fn load(paths: &Paths) -> Result<Self> {
+        if !paths.credentials_file.exists() {
+            return Ok(Self::default());
+        }
+
+        let contents = fs::read_to_string(&paths.credentials_file)
+            .with_context(|| format!("failed to read {}", paths.credentials_file.display()))?;
+        toml::from_str(&contents)
+            .with_context(|| format!("failed to parse {}", paths.credentials_file.display()))
+    }
+
+    fn save(&self, paths: &Paths) -> Result<()> {
+        fs::create_dir_all(&paths.config_dir)
+            .with_context(|| format!("failed to create {}", paths.config_dir.display()))?;
+        let contents = toml::to_string_pretty(self).context("failed to serialize credentials")?;
+        fs::write(&paths.credentials_file, contents)
+            .with_context(|| format!("failed to write {}", paths.credentials_file.display()))?;
+        restrict_file_permissions(&paths.credentials_file)?;
+        Ok(())
+    }
+}
+
+impl Profile {
+    fn new(api_url: String) -> Self {
+        Self {
+            api_url,
+            token_key: None,
+            user_name: None,
+            project: None,
+            namespace: "default".to_string(),
+            subjects: Vec::new(),
+            hints: Vec::new(),
+            updated_at: now(),
+        }
+    }
+
+    fn touch(&mut self) {
+        self.updated_at = now();
+    }
+}
+
+struct Paths {
+    config_dir: PathBuf,
+    config_file: PathBuf,
+    credentials_file: PathBuf,
+}
+
+impl Paths {
+    fn discover() -> Result<Self> {
+        let config_dir = match std::env::var_os("MALU_CONFIG_DIR") {
+            Some(path) => PathBuf::from(path),
+            None => ProjectDirs::from("org", "MaluDB", "malu")
+                .context("could not determine platform config directory")?
+                .config_dir()
+                .to_path_buf(),
+        };
+        let config_file = config_dir.join("config.toml");
+        let credentials_file = config_dir.join("credentials.toml");
+        Ok(Self {
+            config_dir,
+            config_file,
+            credentials_file,
+        })
+    }
+}
+
+fn now() -> String {
+    Utc::now().to_rfc3339()
+}
+
+#[cfg(unix)]
+fn restrict_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to set permissions on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_file_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
