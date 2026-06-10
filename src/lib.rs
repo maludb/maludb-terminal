@@ -305,6 +305,14 @@ struct MemoryDocumentRequest {
 }
 
 #[derive(Debug, Serialize)]
+struct MemoryIngestRequest {
+    model: String,
+    text: String,
+    namespace: String,
+    hints: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
 struct MemoryEdge {
     subject_text: String,
     verb_text: String,
@@ -496,8 +504,8 @@ fn handle_note(paths: &Paths, text: String) -> Result<()> {
     let (_, profile) = config.active_profile()?;
     let token = config.required_token(paths, profile)?;
     let api = ApiClient::new(&profile.api_url, Some(token));
-    let request = memory_document_request(profile, "CLI note", "note", "text/plain", &text, None);
-    let response: MemoryDocumentResponse = api.post_json("/v1/memory/documents", &request)?;
+    let request = memory_ingest_request(profile, &text);
+    let response: MemoryDocumentResponse = api.post_json("/v1/memory/ingest", &request)?;
     println!("Ingested note as document {}", response.document_id);
     Ok(())
 }
@@ -952,6 +960,42 @@ fn memory_document_request(
         projects: profile.project.iter().cloned().collect(),
         subjects: profile.subjects.clone(),
         edges: None,
+    }
+}
+
+fn memory_ingest_request(profile: &Profile, content: &str) -> MemoryIngestRequest {
+    let text = format!("{}\nNote:\n{content}", context_preamble(profile));
+    let mut hints = Vec::new();
+
+    if let Some(project) = profile
+        .project
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        hints.push(serde_json::json!({
+            "subject-type": "project",
+            "subject-name": project,
+        }));
+    }
+
+    for subject in &profile.subjects {
+        hints.push(serde_json::json!({
+            "subject-type": "other",
+            "subject-name": subject,
+        }));
+    }
+
+    for hint in &profile.hints {
+        hints.push(serde_json::json!({
+            "hint": hint,
+        }));
+    }
+
+    MemoryIngestRequest {
+        model: "chatgpt-4o".to_string(),
+        text,
+        namespace: profile.namespace.clone(),
+        hints,
     }
 }
 

@@ -61,11 +61,11 @@ malu sync diff
 malu completions bash > malu.bash
 ```
 
-Notes, document pushes, and chat log uploads use `POST /v1/memory/documents`,
-include a context preamble in the submitted text, pass active subjects as API
-subjects, and store active hints in metadata. Chat logs from Codex and Claude
-Code are normalized into readable transcripts before upload and tagged with
-their original source in metadata.
+Notes use `POST /v1/memory/ingest` with a context preamble and active profile
+hints. Document pushes and chat log uploads use `POST /v1/memory/documents`,
+pass active subjects as API subjects, and store active hints in metadata. Chat
+logs from Codex and Claude Code are normalized into readable transcripts before
+upload and tagged with their original source in metadata.
 
 Tokens are stored in the platform keyring by default. Use `--store file` on
 headless systems; file credentials are stored separately from `config.toml` and

@@ -283,19 +283,24 @@ fn token_mint_posts_postgres_credentials_and_stores_returned_token() {
 }
 
 #[test]
-fn note_posts_contextualized_text_to_memory_documents() {
+fn note_posts_contextualized_text_to_memory_ingest() {
     let mut server = mockito::Server::new();
     let ingest = server
-        .mock("POST", "/v1/memory/documents")
+        .mock("POST", "/v1/memory/ingest")
         .match_header("authorization", "Bearer malu_testtoken")
         .match_body(Matcher::AllOf(vec![
-            Matcher::Regex(r#""source_type":"note""#.to_string()),
-            Matcher::Regex(r#""subjects":\["FastAPI"\]"#.to_string()),
-            Matcher::Regex(r#""hints":\["This is about API smoke testing"\]"#.to_string()),
+            Matcher::Regex(r#""model":"chatgpt-4o""#.to_string()),
+            Matcher::Regex(r#""namespace":"default""#.to_string()),
+            Matcher::Regex(r#""subject-type":"project""#.to_string()),
+            Matcher::Regex(r#""subject-name":"maludb api""#.to_string()),
+            Matcher::Regex(r#""subject-type":"other""#.to_string()),
+            Matcher::Regex(r#""subject-name":"FastAPI""#.to_string()),
+            Matcher::Regex(r#"This is about API smoke testing"#.to_string()),
             Matcher::Regex(r#"Context:\\n- User: Craig"#.to_string()),
+            Matcher::Regex(r#"Note:\\nStarting to debug the maludb api"#.to_string()),
         ]))
         .with_status(201)
-        .with_body(r#"{"document_id":42,"edges":[]}"#)
+        .with_body(r#"{"document_id":42,"result":{"created":{},"skipped":[]}}"#)
         .create();
 
     let config_dir = tempfile::tempdir().expect("temp config dir");
