@@ -10,6 +10,12 @@ fn malu(config_dir: &TempDir) -> Command {
     cmd
 }
 
+fn malu_keyring_disabled(config_dir: &TempDir) -> Command {
+    let mut cmd = malu(config_dir);
+    cmd.env("MALU_KEYRING_DISABLED", "1");
+    cmd
+}
+
 fn create_profile(config_dir: &TempDir, api_url: &str) {
     malu(config_dir)
         .args([
@@ -57,6 +63,18 @@ fn set_api_bootstraps_default_profile_when_none_exists() {
         .success()
         .stdout(predicate::str::contains("Profile: default"))
         .stdout(predicate::str::contains("API URL: https://api.maludb.org"));
+}
+
+#[test]
+fn completions_prints_requested_shell_script() {
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+
+    malu(&config_dir)
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_malu"))
+        .stdout(predicate::str::contains("profile"));
 }
 
 #[test]
@@ -186,6 +204,82 @@ fn set_token_file_store_keeps_raw_token_out_of_main_config() {
     let credentials = std::fs::read_to_string(config_dir.path().join("credentials.toml"))
         .expect("credential file should be written");
     assert!(credentials.contains("malu_testtoken"));
+}
+
+#[test]
+fn set_token_defaults_to_keyring_and_falls_back_to_file_when_disabled() {
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, "http://localhost:8000");
+
+    malu_keyring_disabled(&config_dir)
+        .args(["set-token", "malu_fallbacktoken"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Stored token for profile maludb-api in file credential store",
+        ));
+
+    let config = std::fs::read_to_string(config_dir.path().join("config.toml"))
+        .expect("config file should be written");
+    assert!(config.contains("token_store = \"file\""));
+    assert!(!config.contains("malu_fallbacktoken"));
+
+    let credentials = std::fs::read_to_string(config_dir.path().join("credentials.toml"))
+        .expect("credential file should be written");
+    assert!(credentials.contains("malu_fallbacktoken"));
+}
+
+#[test]
+fn token_mint_posts_postgres_credentials_and_stores_returned_token() {
+    let mut server = mockito::Server::new();
+    let mint = server
+        .mock("POST", "/v1/tokens")
+        .match_body(Matcher::PartialJson(json!({
+            "pg_dbname": "maludb",
+            "pg_user": "craig",
+            "pg_password": "secret",
+            "role": "executor",
+            "device_name": "macbook",
+        })))
+        .with_status(201)
+        .with_body(r#"{"token":"malu_mintedtoken","id":9,"user_id":1,"role":"executor"}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+
+    malu(&config_dir)
+        .args([
+            "token",
+            "mint",
+            "--pg-dbname",
+            "maludb",
+            "--pg-user",
+            "craig",
+            "--pg-password",
+            "secret",
+            "--role",
+            "executor",
+            "--device-name",
+            "macbook",
+            "--store",
+            "file",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Minted and stored token for profile maludb-api",
+        ));
+
+    let config = std::fs::read_to_string(config_dir.path().join("config.toml"))
+        .expect("config file should be written");
+    assert!(!config.contains("malu_mintedtoken"));
+
+    let credentials = std::fs::read_to_string(config_dir.path().join("credentials.toml"))
+        .expect("credential file should be written");
+    assert!(credentials.contains("malu_mintedtoken"));
+
+    mint.assert();
 }
 
 #[test]
@@ -426,6 +520,233 @@ fn get_commands_print_api_resources() {
     subjects.assert();
     projects.assert();
     documents.assert();
+}
+
+#[test]
+fn get_commands_support_query_limit_and_json_output() {
+    let mut server = mockito::Server::new();
+    let subjects = server
+        .mock("GET", "/v1/subjects")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("q".into(), "FastAPI".into()),
+            Matcher::UrlEncoded("limit".into(), "5".into()),
+        ]))
+        .with_status(200)
+        .with_body(r#"{"subjects":[{"id":1,"label":"FastAPI","type":"technology"}]}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args([
+            "get", "subjects", "--query", "FastAPI", "--limit", "5", "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""subjects""#))
+        .stdout(predicate::str::contains(r#""FastAPI""#));
+
+    subjects.assert();
+}
+
+#[test]
+fn sync_push_creates_remote_settings_note_without_raw_token() {
+    let mut server = mockito::Server::new();
+    let lookup = server
+        .mock("GET", "/v1/notes")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("type".into(), "malu_cli_settings".into()),
+            Matcher::UrlEncoded("q".into(), "malu-cli-settings".into()),
+        ]))
+        .with_status(200)
+        .with_body(r#"{"notes":[]}"#)
+        .create();
+    let create = server
+        .mock("POST", "/v1/notes")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::PartialJson(json!({
+                "title": "malu-cli-settings",
+                "type": "malu_cli_settings",
+            })),
+            Matcher::Regex(r#""body":"\{.*\\"schema_version\\":1"#.to_string()),
+            Matcher::Regex(r#"\\"profiles\\":\{.*\\"maludb-api\\""#.to_string()),
+        ]))
+        .match_request(|request| {
+            !request
+                .utf8_lossy_body()
+                .expect("request body")
+                .contains("malu_testtoken")
+        })
+        .with_status(201)
+        .with_body(r#"{"note":{"id":55,"title":"malu-cli-settings","type":"malu_cli_settings"}}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+    malu(&config_dir)
+        .args(["subjects", "add", "FastAPI"])
+        .assert()
+        .success();
+
+    malu(&config_dir)
+        .args(["sync", "push"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pushed settings to note 55"));
+
+    lookup.assert();
+    create.assert();
+}
+
+#[test]
+fn sync_push_updates_existing_remote_settings_note() {
+    let mut server = mockito::Server::new();
+    let lookup = server
+        .mock("GET", "/v1/notes")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("type".into(), "malu_cli_settings".into()),
+            Matcher::UrlEncoded("q".into(), "malu-cli-settings".into()),
+        ]))
+        .with_status(200)
+        .with_body(r#"{"notes":[{"id":55,"title":"malu-cli-settings","body":"{}","type":"malu_cli_settings"}]}"#)
+        .create();
+    let update = server
+        .mock("PATCH", "/v1/notes/55")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::PartialJson(json!({
+            "title": "malu-cli-settings",
+            "type": "malu_cli_settings",
+        })))
+        .with_status(200)
+        .with_body(r#"{"note":{"id":55,"title":"malu-cli-settings","type":"malu_cli_settings"}}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["sync", "push"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pushed settings to note 55"));
+
+    lookup.assert();
+    update.assert();
+}
+
+#[test]
+fn sync_pull_imports_remote_profiles_without_requiring_remote_token() {
+    let remote_body = json!({
+        "schema_version": 1,
+        "updated_at": "2099-01-01T00:00:00Z",
+        "device_id": "other-device",
+        "active_profile": "remote",
+        "profiles": {
+            "remote": {
+                "api_url": "https://api.maludb.org",
+                "token_key": "remote",
+                "token_store": "file",
+                "user_name": "Craig",
+                "project": "remote project",
+                "namespace": "default",
+                "subjects": ["FastAPI"],
+                "hints": ["remote hint"],
+                "updated_at": "2099-01-01T00:00:00Z"
+            }
+        }
+    })
+    .to_string();
+    let mut server = mockito::Server::new();
+    let lookup = server
+        .mock("GET", "/v1/notes")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("type".into(), "malu_cli_settings".into()),
+            Matcher::UrlEncoded("q".into(), "malu-cli-settings".into()),
+        ]))
+        .with_status(200)
+        .with_body(json!({"notes":[{"id":55,"title":"malu-cli-settings","body":remote_body,"type":"malu_cli_settings"}]}).to_string())
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["sync", "pull"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pulled settings from note 55"));
+
+    malu(&config_dir)
+        .args(["profile", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Profile: remote"))
+        .stdout(predicate::str::contains("Project: remote project"))
+        .stdout(predicate::str::contains("Subjects: FastAPI"));
+
+    lookup.assert();
+}
+
+#[test]
+fn sync_status_and_diff_report_remote_state() {
+    let remote_body = json!({
+        "schema_version": 1,
+        "updated_at": "2099-01-01T00:00:00Z",
+        "device_id": "other-device",
+        "active_profile": "remote",
+        "profiles": {
+            "remote": {
+                "api_url": "https://api.maludb.org",
+                "namespace": "default",
+                "subjects": [],
+                "hints": [],
+                "updated_at": "2099-01-01T00:00:00Z"
+            }
+        }
+    })
+    .to_string();
+    let mut server = mockito::Server::new();
+    let status_lookup = server
+        .mock("GET", "/v1/notes")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("type".into(), "malu_cli_settings".into()),
+            Matcher::UrlEncoded("q".into(), "malu-cli-settings".into()),
+        ]))
+        .with_status(200)
+        .with_body(json!({"notes":[{"id":55,"title":"malu-cli-settings","body":remote_body,"type":"malu_cli_settings"}]}).to_string())
+        .expect(2)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["sync", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Remote settings note 55"))
+        .stdout(predicate::str::contains("Remote profiles: 1"));
+
+    malu(&config_dir)
+        .args(["sync", "diff"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Only local: maludb-api"))
+        .stdout(predicate::str::contains("Only remote: remote"));
+
+    status_lookup.assert();
 }
 
 #[test]

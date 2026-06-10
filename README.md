@@ -9,7 +9,14 @@ Implemented commands:
 
 ```bash
 malu set-api https://api.maludb.org
+malu set-token malu_...
 malu set-token malu_... --store file
+
+malu token mint \
+  --pg-dbname maludb \
+  --pg-user craig \
+  --pg-password '...' \
+  --device-name macbook
 
 malu profile create maludb-api \
   --api-url https://api.maludb.org \
@@ -30,9 +37,9 @@ malu hints list
 malu hints clear
 
 malu get config
-malu get subjects
-malu get projects
-malu get documents
+malu get subjects --query FastAPI --limit 5 --json
+malu get projects --query "maludb api"
+malu get documents --with attributes
 
 malu note "Starting to debug the maludb api"
 malu doc push ./debug-log.md
@@ -43,11 +50,35 @@ malu smoke note
 malu smoke document ./sample.md
 malu smoke search --query "debug API" --subject "FastAPI"
 malu smoke full
+
+malu sync push
+malu sync pull
+malu sync status
+malu sync diff
+
+malu completions bash > malu.bash
 ```
 
 Notes and document pushes use `POST /v1/memory/documents`, include a context
 preamble in the submitted text, pass active subjects as API subjects, and store
 active hints in metadata.
+
+Tokens are stored in the platform keyring by default. Use `--store file` on
+headless systems; file credentials are stored separately from `config.toml` and
+use strict permissions on Unix.
+
+Sync v1 stores portable CLI settings in an internal MaluDB note named
+`malu-cli-settings` with type `malu_cli_settings`. Raw API tokens are never
+included in the synced settings blob.
+
+## Install
+
+```bash
+cargo install --path .
+```
+
+The CLI currently targets macOS first, with Linux and Windows kept in the code
+path through `directories` and platform keyring support.
 
 ## Local Development
 

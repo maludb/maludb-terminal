@@ -1,12 +1,15 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{Shell, generate};
 use directories::ProjectDirs;
+use keyring_core::Entry;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
@@ -23,8 +26,12 @@ enum Commands {
     },
     SetToken {
         token: String,
-        #[arg(long, value_enum, default_value_t = TokenStore::File)]
+        #[arg(long, value_enum, default_value_t = TokenStore::Keyring)]
         store: TokenStore,
+    },
+    Token {
+        #[command(subcommand)]
+        command: TokenCommand,
     },
     Profile {
         #[command(subcommand)]
@@ -52,6 +59,14 @@ enum Commands {
     Smoke {
         #[command(subcommand)]
         command: SmokeCommand,
+    },
+    Sync {
+        #[command(subcommand)]
+        command: SyncCommand,
+    },
+    Completions {
+        #[arg(value_enum)]
+        shell: Shell,
     },
 }
 
@@ -87,10 +102,38 @@ enum ListCommand {
 
 #[derive(Debug, Subcommand)]
 enum GetCommand {
-    Config,
-    Subjects,
-    Projects,
-    Documents,
+    Config {
+        #[arg(long)]
+        json: bool,
+    },
+    Subjects {
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        limit: Option<u16>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long = "with")]
+        with_: Option<String>,
+    },
+    Projects {
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        limit: Option<u16>,
+        #[arg(long)]
+        json: bool,
+    },
+    Documents {
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long)]
+        limit: Option<u16>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long = "with")]
+        with_: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -100,7 +143,28 @@ enum DocCommand {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum TokenStore {
+    Keyring,
     File,
+}
+
+#[derive(Debug, Subcommand)]
+enum TokenCommand {
+    Mint {
+        #[arg(long)]
+        pg_dbname: String,
+        #[arg(long)]
+        pg_user: String,
+        #[arg(long)]
+        pg_password: String,
+        #[arg(long, default_value = "executor")]
+        role: String,
+        #[arg(long)]
+        device_name: Option<String>,
+        #[arg(long)]
+        expires_in_days: Option<u32>,
+        #[arg(long, value_enum, default_value_t = TokenStore::Keyring)]
+        store: TokenStore,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -124,18 +188,28 @@ enum SmokeCommand {
     Full,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Subcommand)]
+enum SyncCommand {
+    Push,
+    Pull,
+    Status,
+    Diff,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct Config {
     active_profile: Option<String>,
     #[serde(default)]
     profiles: BTreeMap<String, Profile>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Profile {
     api_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     token_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_store: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,6 +237,38 @@ struct ServerError {
 struct Credentials {
     #[serde(default)]
     tokens: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TokenMintRequest {
+    pg_dbname: String,
+    pg_user: String,
+    pg_password: String,
+    role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_in_days: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenMintResponse {
+    token: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SyncBlob {
+    schema_version: u16,
+    updated_at: String,
+    device_id: String,
+    active_profile: Option<String>,
+    profiles: BTreeMap<String, Profile>,
+}
+
+#[derive(Debug)]
+struct SettingsNote {
+    id: i64,
+    body: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -205,6 +311,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
     match command {
         Commands::SetApi { api_url } => set_api(paths, api_url),
         Commands::SetToken { token, store } => set_token(paths, token, store),
+        Commands::Token { command } => handle_token(paths, command),
         Commands::Profile { command } => handle_profile(paths, command),
         Commands::Subjects { command } => handle_collection(paths, command, Collection::Subjects),
         Commands::Hints { command } => handle_collection(paths, command, Collection::Hints),
@@ -212,6 +319,12 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
         Commands::Note { text } => handle_note(paths, text),
         Commands::Doc { command } => handle_doc(paths, command),
         Commands::Smoke { command } => handle_smoke(paths, command),
+        Commands::Sync { command } => handle_sync(paths, command),
+        Commands::Completions { shell } => {
+            let mut command = Cli::command();
+            generate(shell, &mut command, "malu", &mut io::stdout());
+            Ok(())
+        }
     }
 }
 
@@ -241,21 +354,44 @@ fn set_api(paths: &Paths, api_url: String) -> Result<()> {
 }
 
 fn set_token(paths: &Paths, token: String, store: TokenStore) -> Result<()> {
-    match store {
-        TokenStore::File => {
-            let mut config = Config::load(paths)?;
-            let (profile_name, token_key) = {
-                let (profile_name, profile) = config.active_profile_mut()?;
-                profile.token_key = Some(profile_name.clone());
-                profile.touch();
-                (profile_name.clone(), profile_name)
-            };
+    let mut config = Config::load(paths)?;
+    let (profile_name, actual_store) =
+        store_token_for_active_profile(paths, &mut config, token, store)?;
+    config.save(paths)?;
+    println!(
+        "Stored token for profile {profile_name} in {} credential store",
+        actual_store.as_str()
+    );
+    Ok(())
+}
 
-            let mut credentials = Credentials::load(paths)?;
-            credentials.tokens.insert(token_key, token);
-            credentials.save(paths)?;
+fn handle_token(paths: &Paths, command: TokenCommand) -> Result<()> {
+    match command {
+        TokenCommand::Mint {
+            pg_dbname,
+            pg_user,
+            pg_password,
+            role,
+            device_name,
+            expires_in_days,
+            store,
+        } => {
+            let mut config = Config::load(paths)?;
+            let (_, profile) = config.active_profile()?;
+            let api = ApiClient::new(&profile.api_url, None);
+            let request = TokenMintRequest {
+                pg_dbname,
+                pg_user,
+                pg_password,
+                role,
+                device_name,
+                expires_in_days,
+            };
+            let response: TokenMintResponse = api.post_json("/v1/tokens", &request)?;
+            let (profile_name, _) =
+                store_token_for_active_profile(paths, &mut config, response.token, store)?;
             config.save(paths)?;
-            println!("Stored token for profile {profile_name} in file credential store");
+            println!("Minted and stored token for profile {profile_name}");
             Ok(())
         }
     }
@@ -353,25 +489,54 @@ fn handle_get(paths: &Paths, command: GetCommand) -> Result<()> {
     let api = ApiClient::new(&profile.api_url, Some(token));
 
     match command {
-        GetCommand::Config => {
+        GetCommand::Config { json } => {
             let body = api.get_json("/v1/memory/config")?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
             let namespace = string_field(&body, "namespace", "default");
             let config = body.get("config").unwrap_or(&Value::Null);
             println!("Memory config {namespace} {}", compact_json(config));
             Ok(())
         }
-        GetCommand::Subjects => {
-            let body = api.get_json("/v1/subjects")?;
+        GetCommand::Subjects {
+            query,
+            limit,
+            json,
+            with_,
+        } => {
+            let params = list_query(query, limit, with_);
+            let body = api.get_json_query("/v1/subjects", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
             print_subjects(&body);
             Ok(())
         }
-        GetCommand::Projects => {
-            let body = api.get_json("/v1/projects")?;
+        GetCommand::Projects { query, limit, json } => {
+            let params = list_query(query, limit, None);
+            let body = api.get_json_query("/v1/projects", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
             print_named_items(&body, "projects", "name");
             Ok(())
         }
-        GetCommand::Documents => {
-            let body = api.get_json("/v1/documents")?;
+        GetCommand::Documents {
+            query,
+            limit,
+            json,
+            with_,
+        } => {
+            let params = list_query(query, limit, with_);
+            let body = api.get_json_query("/v1/documents", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
             print_documents(&body);
             Ok(())
         }
@@ -406,6 +571,92 @@ fn handle_doc(paths: &Paths, command: DocCommand) -> Result<()> {
                 "Ingested document {title} as document {}",
                 response.document_id
             );
+            Ok(())
+        }
+    }
+}
+
+fn handle_sync(paths: &Paths, command: SyncCommand) -> Result<()> {
+    let config = Config::load(paths)?;
+    let (_, profile) = config.active_profile()?;
+    let token = config.required_token(paths, profile)?;
+    let api = ApiClient::new(&profile.api_url, Some(token));
+
+    match command {
+        SyncCommand::Push => {
+            let blob = sync_blob_from_config(paths, &config)?;
+            let body = serde_json::to_string(&blob).context("failed to serialize sync blob")?;
+            let note_body = serde_json::json!({
+                "title": SETTINGS_TITLE,
+                "type": SETTINGS_TYPE,
+                "body": body,
+            });
+            let response = match fetch_settings_note(&api)? {
+                Some(note) => api.patch_value(&format!("/v1/notes/{}", note.id), &note_body)?,
+                None => api.post_value("/v1/notes", &note_body)?,
+            };
+            let id = note_id(&response).unwrap_or(0);
+            println!("Pushed settings to note {id}");
+            Ok(())
+        }
+        SyncCommand::Pull => {
+            let note =
+                fetch_settings_note(&api)?.context("No remote malu-cli-settings note found")?;
+            let blob: SyncBlob =
+                serde_json::from_str(&note.body).context("failed to parse remote settings blob")?;
+            let mut next = Config {
+                active_profile: blob.active_profile,
+                profiles: blob.profiles,
+            };
+            preserve_local_token_settings(&config, &mut next);
+            next.save(paths)?;
+            println!("Pulled settings from note {}", note.id);
+            Ok(())
+        }
+        SyncCommand::Status => {
+            match fetch_settings_note(&api)? {
+                Some(note) => {
+                    let blob: SyncBlob = serde_json::from_str(&note.body)
+                        .context("failed to parse remote settings blob")?;
+                    println!("Remote settings note {}", note.id);
+                    println!("Remote updated: {}", blob.updated_at);
+                    println!("Remote profiles: {}", blob.profiles.len());
+                    println!("Local profiles: {}", config.profiles.len());
+                }
+                None => {
+                    println!("No remote settings note found");
+                    println!("Local profiles: {}", config.profiles.len());
+                }
+            }
+            Ok(())
+        }
+        SyncCommand::Diff => {
+            let Some(note) = fetch_settings_note(&api)? else {
+                println!("No remote settings note found");
+                return Ok(());
+            };
+            let blob: SyncBlob =
+                serde_json::from_str(&note.body).context("failed to parse remote settings blob")?;
+            let mut local_only = Vec::new();
+            let mut remote_only = Vec::new();
+            let mut both = Vec::new();
+
+            for name in config.profiles.keys() {
+                if blob.profiles.contains_key(name) {
+                    both.push(name.clone());
+                } else {
+                    local_only.push(name.clone());
+                }
+            }
+            for name in blob.profiles.keys() {
+                if !config.profiles.contains_key(name) {
+                    remote_only.push(name.clone());
+                }
+            }
+
+            print_name_list("Only local", &local_only);
+            print_name_list("Only remote", &remote_only);
+            print_name_list("Both", &both);
             Ok(())
         }
     }
@@ -733,6 +984,24 @@ fn display_list(values: &[String]) -> String {
     }
 }
 
+fn list_query(
+    query: Option<String>,
+    limit: Option<u16>,
+    with_: Option<String>,
+) -> Vec<(&'static str, String)> {
+    let mut params = Vec::new();
+    if let Some(query) = query {
+        params.push(("q", query));
+    }
+    if let Some(limit) = limit {
+        params.push(("limit", limit.to_string()));
+    }
+    if let Some(with_) = with_ {
+        params.push(("with", with_));
+    }
+    params
+}
+
 fn print_subjects(body: &Value) {
     let Some(subjects) = body.get("subjects").and_then(Value::as_array) else {
         println!("No subjects returned");
@@ -816,6 +1085,149 @@ fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
 }
 
+const SETTINGS_TITLE: &str = "malu-cli-settings";
+const SETTINGS_TYPE: &str = "malu_cli_settings";
+const KEYRING_SERVICE: &str = "org.maludb.malu";
+
+fn fetch_settings_note(api: &ApiClient) -> Result<Option<SettingsNote>> {
+    let body = api.get_json_query(
+        "/v1/notes",
+        &[
+            ("type", SETTINGS_TYPE.to_string()),
+            ("q", SETTINGS_TITLE.to_string()),
+        ],
+    )?;
+    let note = body
+        .get("notes")
+        .and_then(Value::as_array)
+        .and_then(|notes| notes.first());
+    let Some(note) = note else {
+        return Ok(None);
+    };
+    let id = note
+        .get("id")
+        .and_then(Value::as_i64)
+        .context("remote settings note is missing id")?;
+    let body = note
+        .get("body")
+        .and_then(Value::as_str)
+        .context("remote settings note is missing body")?
+        .to_string();
+    Ok(Some(SettingsNote { id, body }))
+}
+
+fn sync_blob_from_config(paths: &Paths, config: &Config) -> Result<SyncBlob> {
+    Ok(SyncBlob {
+        schema_version: 1,
+        updated_at: now(),
+        device_id: device_id(paths)?,
+        active_profile: config.active_profile.clone(),
+        profiles: config.profiles.clone(),
+    })
+}
+
+fn preserve_local_token_settings(local: &Config, remote: &mut Config) {
+    for (name, remote_profile) in &mut remote.profiles {
+        if let Some(local_profile) = local.profiles.get(name) {
+            if local_profile.token_key.is_some() {
+                remote_profile.token_key = local_profile.token_key.clone();
+            }
+            if local_profile.token_store.is_some() {
+                remote_profile.token_store = local_profile.token_store.clone();
+            }
+        }
+    }
+}
+
+fn note_id(response: &Value) -> Option<i64> {
+    response
+        .get("note")
+        .and_then(|note| note.get("id"))
+        .and_then(Value::as_i64)
+}
+
+fn print_name_list(label: &str, names: &[String]) {
+    if names.is_empty() {
+        println!("{label}: (none)");
+    } else {
+        println!("{label}: {}", names.join(", "));
+    }
+}
+
+fn store_token_for_active_profile(
+    paths: &Paths,
+    config: &mut Config,
+    token: String,
+    requested_store: TokenStore,
+) -> Result<(String, TokenStore)> {
+    let (profile_name, token_key) = {
+        let (profile_name, profile) = config.active_profile_mut()?;
+        let token_key = profile_name.clone();
+        profile.token_key = Some(token_key.clone());
+        profile.touch();
+        (profile_name, token_key)
+    };
+
+    let actual_store = match requested_store {
+        TokenStore::File => {
+            store_file_token(paths, token_key.clone(), token)?;
+            TokenStore::File
+        }
+        TokenStore::Keyring => match store_keyring_token(&token_key, &token) {
+            Ok(()) => TokenStore::Keyring,
+            Err(_) => {
+                store_file_token(paths, token_key.clone(), token)?;
+                TokenStore::File
+            }
+        },
+    };
+
+    let (_, profile) = config.active_profile_mut()?;
+    profile.token_store = Some(actual_store.as_str().to_string());
+    Ok((profile_name, actual_store))
+}
+
+fn store_file_token(paths: &Paths, token_key: String, token: String) -> Result<()> {
+    let mut credentials = Credentials::load(paths)?;
+    credentials.tokens.insert(token_key, token);
+    credentials.save(paths)
+}
+
+fn store_keyring_token(token_key: &str, token: &str) -> Result<()> {
+    if std::env::var_os("MALU_KEYRING_DISABLED").is_some() {
+        bail!("keyring disabled by MALU_KEYRING_DISABLED");
+    }
+    keyring::use_native_store(false).context("failed to initialize native keyring")?;
+    let entry = Entry::new(KEYRING_SERVICE, token_key).context("failed to create keyring entry")?;
+    entry
+        .set_password(token)
+        .context("failed to store token in keyring")?;
+    keyring::release_store();
+    Ok(())
+}
+
+fn load_keyring_token(token_key: &str) -> Result<String> {
+    if std::env::var_os("MALU_KEYRING_DISABLED").is_some() {
+        bail!("keyring disabled by MALU_KEYRING_DISABLED");
+    }
+    keyring::use_native_store(false).context("failed to initialize native keyring")?;
+    let entry = Entry::new(KEYRING_SERVICE, token_key).context("failed to create keyring entry")?;
+    let token = entry
+        .get_password()
+        .context("failed to read token from keyring")?;
+    keyring::release_store();
+    Ok(token)
+}
+
+impl TokenStore {
+    fn as_str(self) -> &'static str {
+        match self {
+            TokenStore::Keyring => "keyring",
+            TokenStore::File => "file",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Collection {
     Subjects,
@@ -861,8 +1273,13 @@ impl ApiClient {
     }
 
     fn get_json(&self, path: &str) -> Result<Value> {
+        self.get_json_query(path, &[])
+    }
+
+    fn get_json_query(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
         let response = self
             .request(reqwest::Method::GET, path)
+            .query(query)
             .send()
             .context("failed to send API request")?;
         decode_response(response)
@@ -871,6 +1288,15 @@ impl ApiClient {
     fn post_value(&self, path: &str, body: &Value) -> Result<Value> {
         let response = self
             .request(reqwest::Method::POST, path)
+            .json(body)
+            .send()
+            .context("failed to send API request")?;
+        decode_response(response)
+    }
+
+    fn patch_value(&self, path: &str, body: &Value) -> Result<Value> {
+        let response = self
+            .request(reqwest::Method::PATCH, path)
             .json(body)
             .send()
             .context("failed to send API request")?;
@@ -968,13 +1394,22 @@ impl Config {
             .token_key
             .as_deref()
             .context("No token configured. Run `malu set-token <token>` first.")?;
-        let credentials = Credentials::load(paths)?;
-        credentials
-            .tokens
-            .get(token_key)
-            .cloned()
-            .with_context(|| format!("No token found for key {token_key}"))
+        if profile.token_store.as_deref() == Some(TokenStore::Keyring.as_str())
+            && let Ok(token) = load_keyring_token(token_key)
+        {
+            return Ok(token);
+        }
+        file_token(paths, token_key)
     }
+}
+
+fn file_token(paths: &Paths, token_key: &str) -> Result<String> {
+    let credentials = Credentials::load(paths)?;
+    credentials
+        .tokens
+        .get(token_key)
+        .cloned()
+        .with_context(|| format!("No token found for key {token_key}"))
 }
 
 impl Credentials {
@@ -1005,6 +1440,7 @@ impl Profile {
         Self {
             api_url,
             token_key: None,
+            token_store: None,
             user_name: None,
             project: None,
             namespace: "default".to_string(),
@@ -1023,6 +1459,7 @@ struct Paths {
     config_dir: PathBuf,
     config_file: PathBuf,
     credentials_file: PathBuf,
+    device_file: PathBuf,
 }
 
 impl Paths {
@@ -1036,16 +1473,37 @@ impl Paths {
         };
         let config_file = config_dir.join("config.toml");
         let credentials_file = config_dir.join("credentials.toml");
+        let device_file = config_dir.join("device_id");
         Ok(Self {
             config_dir,
             config_file,
             credentials_file,
+            device_file,
         })
     }
 }
 
 fn now() -> String {
     Utc::now().to_rfc3339()
+}
+
+fn device_id(paths: &Paths) -> Result<String> {
+    if paths.device_file.exists() {
+        return fs::read_to_string(&paths.device_file)
+            .map(|value| value.trim().to_string())
+            .with_context(|| format!("failed to read {}", paths.device_file.display()));
+    }
+
+    fs::create_dir_all(&paths.config_dir)
+        .with_context(|| format!("failed to create {}", paths.config_dir.display()))?;
+    let generated = format!(
+        "malu-{}",
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    fs::write(&paths.device_file, &generated)
+        .with_context(|| format!("failed to write {}", paths.device_file.display()))?;
+    restrict_file_permissions(&paths.device_file)?;
+    Ok(generated)
 }
 
 #[cfg(unix)]
