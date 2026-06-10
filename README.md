@@ -77,16 +77,29 @@ included in the synced settings blob.
 
 ## Install
 
+From this repository:
+
 ```bash
 cargo install --path .
 ```
 
-The CLI currently targets macOS first, with Linux and Windows kept in the code
+The CLI currently targets macOS and Ubuntu Linux, with Windows kept in the code
 path through `directories` and platform keyring support.
+
+On a new Ubuntu server, start with the Ubuntu runbook:
+
+```bash
+git clone https://github.com/maludb/maludb-terminal.git
+cd maludb-terminal
+```
+
+Then follow [`docs/ubuntu.md`](docs/ubuntu.md) to install prerequisites, build,
+package, install, and run smoke tests.
 
 ## Local Development
 
 ```bash
+cargo fmt --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
