@@ -90,14 +90,3 @@ path through `directories` and platform keyring support.
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
-
-## Release Bundles
-
-Build a Unix release bundle for the current host or an installed Rust target:
-
-```bash
-scripts/package-release.sh --target x86_64-unknown-linux-gnu
-```
-
-Ubuntu-specific build, install, and smoke-test notes are in
-[`docs/ubuntu.md`](docs/ubuntu.md).
