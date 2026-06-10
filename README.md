@@ -46,6 +46,11 @@ malu doc push ./debug-log.md
 malu chat push --source codex ~/.codex/sessions/YYYY/MM/DD/session.jsonl
 malu chat push --source claude-code ~/.claude/projects/project/session.jsonl
 
+malu skill push ~/.claude/skills/pdf-processing   # upload a Claude Agent Skill bundle
+malu skill push-all                               # scan ~/.claude/skills + ./.claude/skills
+malu skill list --verb extract                    # tag-aware discovery
+malu skill pull pdf-processing --dest ./skills/   # reconstruct (paths + executable bits)
+
 malu smoke health
 malu smoke config
 malu smoke note
