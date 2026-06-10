@@ -943,3 +943,254 @@ fn smoke_full_runs_memory_pipeline_workflow() {
     document.assert();
     search.assert();
 }
+
+// ---------------------------------------------------------------------------
+// Skill commands — push / push-all / list / pull
+// ---------------------------------------------------------------------------
+
+fn write_skill_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+    let skill_dir = dir.join("pdf-processing");
+    std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: pdf-processing\ndescription: Extract text from PDF files. Use when working with PDFs.\nmetadata:\n  version: \"1.0\"\n---\n\n# PDF processing\n\nExtract text from PDF files.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        skill_dir.join("scripts").join("extract.py"),
+        "#!/usr/bin/env python3\nprint(\"extract\")\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            skill_dir.join("scripts").join("extract.py"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    skill_dir
+}
+
+#[test]
+fn skill_push_uploads_bundle_with_frontmatter_and_executable_bit() {
+    let mut server = mockito::Server::new();
+    let ingest = server
+        .mock("POST", "/v1/skills/ingest")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::PartialJson(json!({
+                "name": "pdf-processing",
+                "frontmatter": {
+                    "name": "pdf-processing",
+                    "metadata": {"version": "1.0"},
+                },
+            })),
+            Matcher::Regex(r#""relative_path":"SKILL.md""#.to_string()),
+            Matcher::Regex(r#""relative_path":"scripts/extract.py""#.to_string()),
+            Matcher::Regex(r#""is_executable":true"#.to_string()),
+        ]))
+        .with_status(201)
+        .with_body(
+            r#"{"skill_id":6,"version":"1.0","bundle_hash":"abc","reused":false,
+               "parent":{"owner_schema":null,"skill_id":null,"note":null},
+               "materiality":{"verdict":"material","reasons":["no_parent"]},
+               "register":{"skill_id":6,"files_linked":2},
+               "ingest":{"created":{"subjects":1}}}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+    let skill_dir = write_skill_fixture(config_dir.path());
+
+    malu(&config_dir)
+        .args(["skill", "push", skill_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Pushed skill pdf-processing as skill 6 version 1.0 (2 files)",
+        ));
+
+    ingest.assert();
+}
+
+#[test]
+fn skill_push_reports_supersession_and_reuse() {
+    let mut server = mockito::Server::new();
+    server
+        .mock("POST", "/v1/skills/ingest")
+        .match_body(Matcher::PartialJson(json!({"materially_different": false})))
+        .with_status(201)
+        .with_body(
+            r#"{"skill_id":8,"version":"1.0+2ac553c0","reused":false,
+               "parent":{"owner_schema":"app","skill_id":7,"note":"auto_detected_same_name"},
+               "materiality":{"verdict":"non_material"},
+               "register":{"skill_id":8,"files_linked":2,"superseded_skill_id":7}}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+    let skill_dir = write_skill_fixture(config_dir.path());
+
+    malu(&config_dir)
+        .args(["skill", "push", skill_dir.to_str().unwrap(), "--supersede"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("supersedes skill 7"));
+
+    let mut server2 = mockito::Server::new();
+    server2
+        .mock("POST", "/v1/skills/ingest")
+        .with_status(200)
+        .with_body(r#"{"skill_id":8,"version":"1.0","reused":true}"#)
+        .create();
+    malu(&config_dir)
+        .args(["set-api", &server2.url()])
+        .assert()
+        .success();
+
+    malu(&config_dir)
+        .args(["skill", "push", skill_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("unchanged"));
+}
+
+#[test]
+fn skill_list_uses_tag_search_params() {
+    let mut server = mockito::Server::new();
+    let search = server
+        .mock("GET", "/v1/skills")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("verb".into(), "extract".into()),
+            Matcher::UrlEncoded("limit".into(), "50".into()),
+        ]))
+        .with_body(
+            r#"{"skills":[{"owner_schema":"app","id":6,"name":"pdf-processing",
+                "version":"1.0","description":"Extract text.","score":80.0,
+                "match_reasons":["verb"],"source_skill_id":null}]}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["skill", "list", "--verb", "extract"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "6  pdf-processing  1.0  score=80 [verb]",
+        ));
+
+    search.assert();
+}
+
+#[test]
+fn skill_pull_reconstructs_bundle_with_executable_bit() {
+    let mut server = mockito::Server::new();
+    let script = "#!/usr/bin/env python3\nprint(\"extract\")\n";
+    let skill_md = "# PDF processing\n";
+    let body = json!({
+        "skill": {"id": 6, "name": "pdf-processing", "version": "1.0"},
+        "files": [
+            {
+                "relative_path": "SKILL.md",
+                "file_hash": sha256_hex_for_test(skill_md.as_bytes()),
+                "file_size": skill_md.len(),
+                "is_executable": false,
+                "media_type": "text/markdown",
+                "content_base64": base64_for_test(skill_md.as_bytes()),
+            },
+            {
+                "relative_path": "scripts/extract.py",
+                "file_hash": sha256_hex_for_test(script.as_bytes()),
+                "file_size": script.len(),
+                "is_executable": true,
+                "media_type": "text/x-python",
+                "content_base64": base64_for_test(script.as_bytes()),
+            }
+        ]
+    });
+    server
+        .mock("GET", "/v1/skills/6/bundle")
+        .with_body(body.to_string())
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+    let dest = config_dir.path().join("pulled");
+
+    malu(&config_dir)
+        .args(["skill", "pull", "6", "--dest", dest.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Pulled skill pdf-processing version 1.0 (2 files)",
+        ));
+
+    assert_eq!(
+        std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+        skill_md
+    );
+    assert_eq!(
+        std::fs::read_to_string(dest.join("scripts/extract.py")).unwrap(),
+        script
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dest.join("scripts/extract.py"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o111, 0, "executable bit restored");
+    }
+
+    // refuses to overwrite without --force
+    malu(&config_dir)
+        .args(["skill", "pull", "6", "--dest", dest.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+}
+
+fn sha256_hex_for_test(content: &[u8]) -> String {
+    // tests avoid new deps: shell out to sha256sum via std
+    use std::io::Write;
+    use std::process::{Command as StdCommand, Stdio};
+    let mut child = StdCommand::new("sha256sum")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("sha256sum available");
+    child.stdin.as_mut().unwrap().write_all(content).unwrap();
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+fn base64_for_test(content: &[u8]) -> String {
+    use std::io::Write;
+    use std::process::{Command as StdCommand, Stdio};
+    let mut child = StdCommand::new("base64")
+        .arg("-w0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("base64 available");
+    child.stdin.as_mut().unwrap().write_all(content).unwrap();
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}

@@ -12,6 +12,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+mod skills;
+use skills::SkillCommand;
+
 #[derive(Debug, Parser)]
 #[command(name = "malu", about = "Send notes and smoke-test workflows to MaluDB")]
 struct Cli {
@@ -55,6 +58,10 @@ enum Commands {
     Doc {
         #[command(subcommand)]
         command: DocCommand,
+    },
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
     },
     Chat {
         #[command(subcommand)]
@@ -337,6 +344,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
         Commands::Get { command } => handle_get(paths, command),
         Commands::Note { text } => handle_note(paths, text),
         Commands::Doc { command } => handle_doc(paths, command),
+        Commands::Skill { command } => skills::handle_skill(paths, command),
         Commands::Chat { command } => handle_chat(paths, command),
         Commands::Smoke { command } => handle_smoke(paths, command),
         Commands::Sync { command } => handle_sync(paths, command),
