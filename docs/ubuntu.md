@@ -128,6 +128,19 @@ malu set-token malu_... --store file
 malu subjects add "MaluDB API"
 ```
 
+Set up the LLM extraction model for `malu note` (one-time; the key is stored
+server-side, never in local files):
+
+```bash
+malu llm catalog            # see what the server offers
+malu llm set-key openai     # paste the key at the hidden prompt
+malu llm use gpt-4o         # extraction model for notes
+malu llm models             # verify the task -> model choices
+```
+
+On headless servers the key can be piped instead of typed:
+`printf '%s\n' "$OPENAI_API_KEY" | malu llm set-key openai`.
+
 Run smoke tests:
 
 ```bash

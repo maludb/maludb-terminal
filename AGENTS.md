@@ -47,6 +47,9 @@ Important existing endpoints in `/Users/user/maludb-python-simple`:
 - `POST /v1/memory/search`: smoke-test search after ingest.
 - `GET /v1/memory/config`: check memory model configuration.
 - `POST /v1/notes`, `GET /v1/notes`, `PATCH /v1/notes/{id}`: acceptable v1 storage path for synced CLI settings if no dedicated client-settings endpoint exists yet.
+- `GET /v1/llm/catalog`: seeded model catalog (provider × model × task) with the caller's key/choice state.
+- `GET/PUT/DELETE /v1/llm/providers/{provider}`: the user's LLM provider API keys (key values never returned).
+- `GET/PUT/DELETE /v1/llm/models/{task}`: the user's task → model choices (`extract`, `skill_extract`, `embed`).
 
 The API returns standard errors shaped like:
 
@@ -67,6 +70,7 @@ Each profile should include:
 - User identity, such as name and role.
 - Project name or identifier.
 - Memory namespace.
+- Optional legacy note-model override (`model`); unset means the server resolves the user's `malu llm use` choice.
 - Active subjects.
 - Active hints.
 - Smoke-test defaults.
@@ -108,6 +112,14 @@ malu get config
 malu get subjects
 malu get projects
 malu get documents
+
+malu llm catalog
+malu llm providers
+malu llm set-key <provider>
+malu llm remove-key <provider>
+malu llm models
+malu llm use <model> [--task extract|skill-extract|embed]
+malu set-model <model>   # legacy per-profile override for `malu note`
 
 malu subjects add "FastAPI"
 malu subjects clear
