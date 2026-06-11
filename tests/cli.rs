@@ -5,14 +5,14 @@ use serde_json::json;
 use tempfile::TempDir;
 
 fn malu(config_dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("malu").expect("binary exists");
+    let mut cmd = Command::cargo_bin("maludb").expect("binary exists");
     cmd.env("MALU_CONFIG_DIR", config_dir.path());
     cmd
 }
 
 fn malu_keyring_disabled(config_dir: &TempDir) -> Command {
     let mut cmd = malu(config_dir);
-    cmd.env("MALU_KEYRING_DISABLED", "1");
+    cmd.env("MALUDB_KEYRING_DISABLED", "1");
     cmd
 }
 
@@ -66,6 +66,25 @@ fn set_api_bootstraps_default_profile_when_none_exists() {
 }
 
 #[test]
+fn maludb_config_dir_takes_precedence_over_legacy_env() {
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    let legacy_config_dir = tempfile::tempdir().expect("legacy temp config dir");
+
+    let mut cmd = Command::cargo_bin("maludb").expect("binary exists");
+    cmd.env("MALUDB_CONFIG_DIR", config_dir.path())
+        .env("MALU_CONFIG_DIR", legacy_config_dir.path())
+        .args(["set-api", "https://api.maludb.org"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Updated API URL for profile default",
+        ));
+
+    assert!(config_dir.path().join("config.toml").exists());
+    assert!(!legacy_config_dir.path().join("config.toml").exists());
+}
+
+#[test]
 fn completions_prints_requested_shell_script() {
     let config_dir = tempfile::tempdir().expect("temp config dir");
 
@@ -73,7 +92,7 @@ fn completions_prints_requested_shell_script() {
         .args(["completions", "bash"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("_malu"))
+        .stdout(predicate::str::contains("_maludb"))
         .stdout(predicate::str::contains("profile"));
 }
 
@@ -299,7 +318,7 @@ fn note_posts_contextualized_text_to_memory_ingest() {
             Matcher::Regex(r#"Note:\\nStarting to debug the maludb api"#.to_string()),
         ]))
         // No model override set: the field is omitted so the server resolves
-        // the user's `malu llm use` choice.
+        // the user's `maludb llm use` choice.
         .match_request(|request| {
             !request
                 .utf8_lossy_body()
@@ -326,7 +345,39 @@ fn note_posts_contextualized_text_to_memory_ingest() {
         .args(["note", "Starting to debug the maludb api"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Ingested note as document 42"));
+        .stdout(predicate::str::contains("Ingested note into memory 42"));
+
+    ingest.assert();
+}
+
+#[test]
+fn note_debug_prints_full_ingest_response() {
+    let mut server = mockito::Server::new();
+    let ingest = server
+        .mock("POST", "/v1/memory/ingest")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::Regex(
+            r#"Note:\\nThe Wednesday meeting is about to begin"#.to_string(),
+        ))
+        .with_status(201)
+        .with_body(
+            r#"{"document_id":43,"result":{"created":{"events":1,"statements":2},"skipped":["duplicate-edge"]}}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["note", "--debug", "The Wednesday meeting is about to begin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Ingested note into memory 43"))
+        .stdout(predicate::str::contains("\"result\": {"))
+        .stdout(predicate::str::contains("\"created\": {"))
+        .stdout(predicate::str::contains("\"statements\": 2"))
+        .stdout(predicate::str::contains("\"duplicate-edge\""));
 
     ingest.assert();
 }
@@ -393,7 +444,7 @@ fn note_model_errors_print_actionable_guidance() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("API error model_api_key_missing"))
-        .stderr(predicate::str::contains("malu llm set-key"));
+        .stderr(predicate::str::contains("maludb llm set-key"));
 }
 
 #[test]
@@ -414,7 +465,7 @@ fn note_unconfigured_model_error_suggests_llm_use() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("API error model_not_configured"))
-        .stderr(predicate::str::contains("malu llm use"));
+        .stderr(predicate::str::contains("maludb llm use"));
 }
 
 // ---------------------------------------------------------------------------
@@ -860,8 +911,9 @@ fn smoke_note_ingests_generated_note_with_provided_edge() {
         .mock("POST", "/v1/memory/documents")
         .match_header("authorization", "Bearer malu_testtoken")
         .match_body(Matcher::AllOf(vec![
-            Matcher::Regex(r#""title":"malu smoke note""#.to_string()),
+            Matcher::Regex(r#""title":"maludb smoke note""#.to_string()),
             Matcher::Regex(r#""source_type":"note""#.to_string()),
+            Matcher::Regex(r#""source":"maludb-cli""#.to_string()),
             Matcher::Regex(r#""edges":\["#.to_string()),
             Matcher::Regex(r#""subject_text":"FastAPI""#.to_string()),
         ]))
@@ -1233,7 +1285,9 @@ fn smoke_full_runs_memory_pipeline_workflow() {
         .mock("POST", "/v1/memory/documents")
         .match_header("authorization", "Bearer malu_testtoken")
         .match_body(Matcher::AllOf(vec![
+            Matcher::Regex(r#""title":"maludb smoke note""#.to_string()),
             Matcher::Regex(r#""source_type":"note""#.to_string()),
+            Matcher::Regex(r#""source":"maludb-cli""#.to_string()),
             Matcher::Regex(r#""edges":\["#.to_string()),
             Matcher::Regex(r#""subject_text":"FastAPI""#.to_string()),
         ]))
@@ -1244,7 +1298,9 @@ fn smoke_full_runs_memory_pipeline_workflow() {
         .mock("POST", "/v1/memory/documents")
         .match_header("authorization", "Bearer malu_testtoken")
         .match_body(Matcher::AllOf(vec![
+            Matcher::Regex(r#""title":"maludb-smoke-document.md""#.to_string()),
             Matcher::Regex(r#""source_type":"document""#.to_string()),
+            Matcher::Regex(r#""source":"maludb-cli""#.to_string()),
             Matcher::Regex(r#""media_type":"text/markdown""#.to_string()),
             Matcher::Regex(r#""edges":\["#.to_string()),
         ]))
@@ -1254,11 +1310,14 @@ fn smoke_full_runs_memory_pipeline_workflow() {
     let search = server
         .mock("POST", "/v1/memory/search")
         .match_header("authorization", "Bearer malu_testtoken")
-        .match_body(Matcher::PartialJson(json!({
-            "namespace": "default",
-            "subject": "FastAPI",
-            "limit": 20,
-        })))
+        .match_body(Matcher::AllOf(vec![
+            Matcher::PartialJson(json!({
+                "namespace": "default",
+                "subject": "FastAPI",
+                "limit": 20,
+            })),
+            Matcher::Regex(r#""query":"MaluDB CLI smoke "#.to_string()),
+        ]))
         .with_status(200)
         .with_body(r#"{"namespace":"default","results":[{"document_id":101},{"document_id":102}]}"#)
         .create();

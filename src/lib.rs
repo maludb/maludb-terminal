@@ -18,7 +18,10 @@ use llm::LlmCommand;
 use skills::SkillCommand;
 
 #[derive(Debug, Parser)]
-#[command(name = "malu", about = "Send notes and smoke-test workflows to MaluDB")]
+#[command(
+    name = "maludb",
+    about = "Send notes and smoke-test workflows to MaluDB"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -34,8 +37,8 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = TokenStore::Keyring)]
         store: TokenStore,
     },
-    /// Pin the model sent with `malu note` (legacy servers only; new servers
-    /// use your `malu llm use` choice when this is unset)
+    /// Pin the model sent with `maludb note` (legacy servers only; new servers
+    /// use your `maludb llm use` choice when this is unset)
     SetModel {
         model: Option<String>,
         /// Clear the override so the server resolves the model
@@ -63,6 +66,8 @@ enum Commands {
         command: GetCommand,
     },
     Note {
+        #[arg(long)]
+        debug: bool,
         text: String,
     },
     Doc {
@@ -254,8 +259,8 @@ struct Profile {
     user_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     project: Option<String>,
-    /// Legacy model override for `malu note`; unset = the server resolves
-    /// the user's `malu llm use` choice.
+    /// Legacy model override for `maludb note`; unset = the server resolves
+    /// the user's `maludb llm use` choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     namespace: String,
@@ -332,7 +337,7 @@ struct MemoryDocumentRequest {
 #[derive(Debug, Serialize)]
 struct MemoryIngestRequest {
     /// Omitted by default — the server resolves the user's extract-model
-    /// choice. Set per-profile via `malu set-model` for legacy servers.
+    /// choice. Set per-profile via `maludb set-model` for legacy servers.
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     text: String,
@@ -372,7 +377,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
         Commands::Subjects { command } => handle_collection(paths, command, Collection::Subjects),
         Commands::Hints { command } => handle_collection(paths, command, Collection::Hints),
         Commands::Get { command } => handle_get(paths, command),
-        Commands::Note { text } => handle_note(paths, text),
+        Commands::Note { text, debug } => handle_note(paths, text, debug),
         Commands::Doc { command } => handle_doc(paths, command),
         Commands::Skill { command } => skills::handle_skill(paths, command),
         Commands::Llm { command } => llm::handle_llm(paths, command),
@@ -381,7 +386,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
         Commands::Sync { command } => handle_sync(paths, command),
         Commands::Completions { shell } => {
             let mut command = Cli::command();
-            generate(shell, &mut command, "malu", &mut io::stdout());
+            generate(shell, &mut command, "maludb", &mut io::stdout());
             Ok(())
         }
     }
@@ -551,14 +556,24 @@ fn handle_profile(paths: &Paths, command: ProfileCommand) -> Result<()> {
     }
 }
 
-fn handle_note(paths: &Paths, text: String) -> Result<()> {
+fn handle_note(paths: &Paths, text: String, debug: bool) -> Result<()> {
     let config = Config::load(paths)?;
     let (_, profile) = config.active_profile()?;
     let token = config.required_token(paths, profile)?;
     let api = ApiClient::new(&profile.api_url, Some(token));
     let request = memory_ingest_request(profile, &text);
-    let response: MemoryDocumentResponse = api.post_json("/v1/memory/ingest", &request)?;
-    println!("Ingested note as document {}", response.document_id);
+    let request = serde_json::to_value(&request).context("failed to serialize note request")?;
+    let response = api.post_value("/v1/memory/ingest", &request)?;
+    let document_id = response
+        .get("document_id")
+        .and_then(Value::as_i64)
+        .context("API response missing numeric document_id")?;
+    println!("Ingested note into memory {document_id}");
+    if debug {
+        let body = serde_json::to_string_pretty(&response)
+            .context("failed to format debug API response")?;
+        println!("{body}");
+    }
     Ok(())
 }
 
@@ -913,7 +928,7 @@ fn smoke_full(paths: &Paths, config: &Config, profile: &Profile) -> Result<()> {
     println!("PASS document {}", document.document_id);
 
     let search_body = serde_json::json!({
-        "query": format!("Malu CLI smoke {stamp}"),
+        "query": format!("MaluDB CLI smoke {stamp}"),
         "namespace": profile.namespace,
         "subject": smoke_subject,
         "limit": 20,
@@ -931,10 +946,10 @@ fn ingest_smoke_note(
     smoke_subject: &str,
     stamp: &str,
 ) -> Result<MemoryDocumentResponse> {
-    let note_text = format!("Malu CLI smoke note generated at {stamp}");
+    let note_text = format!("MaluDB CLI smoke note generated at {stamp}");
     let mut request = memory_document_request(
         profile,
-        "malu smoke note",
+        "maludb smoke note",
         "note",
         "text/plain",
         &note_text,
@@ -964,9 +979,9 @@ fn ingest_smoke_document(
             (title, media_type, text, Some(path))
         }
         None => (
-            "malu-smoke-document.md".to_string(),
+            "maludb-smoke-document.md".to_string(),
             "text/markdown".to_string(),
-            format!("# Malu CLI smoke document\n\nGenerated at {stamp}.\n"),
+            format!("# MaluDB CLI smoke document\n\nGenerated at {stamp}.\n"),
             None,
         ),
     };
@@ -993,7 +1008,7 @@ fn memory_document_request(
     };
     let text = format!("{}\n{body_label}:\n{content}", context_preamble(profile));
     let metadata = serde_json::json!({
-        "source": "malu-cli",
+        "source": "maludb-cli",
         "source_type": source_type,
         "hints": profile.hints,
         "user_name": profile.user_name,
@@ -1078,7 +1093,7 @@ fn smoke_subject(profile: &Profile, subjects: &Value) -> String {
                 .map(ToOwned::to_owned)
         })
         .or_else(|| profile.project.clone())
-        .unwrap_or_else(|| "malu smoke".to_string())
+        .unwrap_or_else(|| "maludb smoke".to_string())
 }
 
 fn smoke_subject_from_profile(profile: &Profile) -> String {
@@ -1087,7 +1102,7 @@ fn smoke_subject_from_profile(profile: &Profile) -> String {
         .first()
         .cloned()
         .or_else(|| profile.project.clone())
-        .unwrap_or_else(|| "malu smoke".to_string())
+        .unwrap_or_else(|| "maludb smoke".to_string())
 }
 
 fn ensure_subject(request: &mut MemoryDocumentRequest, subject: &str) {
@@ -1478,8 +1493,8 @@ fn store_file_token(paths: &Paths, token_key: String, token: String) -> Result<(
 }
 
 fn store_keyring_token(token_key: &str, token: &str) -> Result<()> {
-    if std::env::var_os("MALU_KEYRING_DISABLED").is_some() {
-        bail!("keyring disabled by MALU_KEYRING_DISABLED");
+    if let Some(env_var) = keyring_disabled_env() {
+        bail!("keyring disabled by {env_var}");
     }
     keyring::use_native_store(false).context("failed to initialize native keyring")?;
     let entry = Entry::new(KEYRING_SERVICE, token_key).context("failed to create keyring entry")?;
@@ -1491,8 +1506,8 @@ fn store_keyring_token(token_key: &str, token: &str) -> Result<()> {
 }
 
 fn load_keyring_token(token_key: &str) -> Result<String> {
-    if std::env::var_os("MALU_KEYRING_DISABLED").is_some() {
-        bail!("keyring disabled by MALU_KEYRING_DISABLED");
+    if let Some(env_var) = keyring_disabled_env() {
+        bail!("keyring disabled by {env_var}");
     }
     keyring::use_native_store(false).context("failed to initialize native keyring")?;
     let entry = Entry::new(KEYRING_SERVICE, token_key).context("failed to create keyring entry")?;
@@ -1501,6 +1516,16 @@ fn load_keyring_token(token_key: &str) -> Result<String> {
         .context("failed to read token from keyring")?;
     keyring::release_store();
     Ok(token)
+}
+
+fn keyring_disabled_env() -> Option<&'static str> {
+    if std::env::var_os("MALUDB_KEYRING_DISABLED").is_some() {
+        Some("MALUDB_KEYRING_DISABLED")
+    } else if std::env::var_os("MALU_KEYRING_DISABLED").is_some() {
+        Some("MALU_KEYRING_DISABLED")
+    } else {
+        None
+    }
 }
 
 impl TokenStore {
@@ -1683,10 +1708,10 @@ fn decode_response_inner(
 fn error_hint(code: &str) -> Option<&'static str> {
     match code {
         "model_not_configured" => Some(
-            "Hint: choose an extraction model with `malu llm use <model>` (see `malu llm catalog`).",
+            "Hint: choose an extraction model with `maludb llm use <model>` (see `maludb llm catalog`).",
         ),
         "model_api_key_missing" => Some(
-            "Hint: store your provider API key with `malu llm set-key <provider>` (see `malu llm providers`).",
+            "Hint: store your provider API key with `maludb llm set-key <provider>` (see `maludb llm providers`).",
         ),
         _ => None,
     }
@@ -1716,7 +1741,7 @@ impl Config {
         let name = self
             .active_profile
             .as_deref()
-            .context("No active profile. Run `malu profile create <name>` first.")?;
+            .context("No active profile. Run `maludb profile create <name>` first.")?;
         let profile = self
             .profiles
             .get(name)
@@ -1728,7 +1753,7 @@ impl Config {
         let name = self
             .active_profile
             .clone()
-            .context("No active profile. Run `malu profile create <name>` first.")?;
+            .context("No active profile. Run `maludb profile create <name>` first.")?;
         let profile = self
             .profiles
             .get_mut(&name)
@@ -1740,7 +1765,7 @@ impl Config {
         let token_key = profile
             .token_key
             .as_deref()
-            .context("No token configured. Run `malu set-token <token>` first.")?;
+            .context("No token configured. Run `maludb set-token <token>` first.")?;
         if profile.token_store.as_deref() == Some(TokenStore::Keyring.as_str())
             && let Ok(token) = load_keyring_token(token_key)
         {
@@ -1812,13 +1837,15 @@ struct Paths {
 
 impl Paths {
     fn discover() -> Result<Self> {
-        let config_dir = match std::env::var_os("MALU_CONFIG_DIR") {
-            Some(path) => PathBuf::from(path),
-            None => ProjectDirs::from("org", "MaluDB", "malu")
-                .context("could not determine platform config directory")?
-                .config_dir()
-                .to_path_buf(),
-        };
+        let config_dir = std::env::var_os("MALUDB_CONFIG_DIR")
+            .or_else(|| std::env::var_os("MALU_CONFIG_DIR"))
+            .map(PathBuf::from)
+            .map(Ok)
+            .unwrap_or_else(|| {
+                ProjectDirs::from("org", "MaluDB", "malu")
+                    .context("could not determine platform config directory")
+                    .map(|dirs| dirs.config_dir().to_path_buf())
+            })?;
         let config_file = config_dir.join("config.toml");
         let credentials_file = config_dir.join("credentials.toml");
         let device_file = config_dir.join("device_id");

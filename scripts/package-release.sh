@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/package-release.sh [OPTIONS]
 
-Build and package a Unix malu release tarball.
+Build and package a Unix maludb release tarball.
 
 Options:
   --target TARGET     Rust target triple. Defaults to the local rustc host.
@@ -14,8 +14,8 @@ Options:
   -h, --help          Show this help.
 
 Environment:
-  MALU_SKIP_BUILD=1   Skip cargo build and package MALU_BINARY instead.
-  MALU_BINARY=PATH    Binary path to package when MALU_SKIP_BUILD=1.
+  MALUDB_SKIP_BUILD=1   Skip cargo build and package MALUDB_BINARY instead.
+  MALUDB_BINARY=PATH    Binary path to package when MALUDB_SKIP_BUILD=1.
 USAGE
 }
 
@@ -81,23 +81,23 @@ if [ -z "$version" ]; then
   exit 1
 fi
 
-if [ "${MALU_SKIP_BUILD:-0}" != "1" ]; then
+if [ "${MALUDB_SKIP_BUILD:-0}" != "1" ]; then
   cargo build --release --target "$target"
 fi
 
-binary="${MALU_BINARY:-target/$target/release/malu}"
+binary="${MALUDB_BINARY:-target/$target/release/maludb}"
 if [ ! -x "$binary" ]; then
   echo "error: release binary not found or not executable: $binary" >&2
   exit 1
 fi
 
-package="malu-$version-$target"
+package="maludb-$version-$target"
 archive="$package.tar.gz"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
 mkdir -p "$dist_dir" "$work_dir/$package/bin"
-install -m 0755 "$binary" "$work_dir/$package/bin/malu"
+install -m 0755 "$binary" "$work_dir/$package/bin/maludb"
 install -m 0644 README.md "$work_dir/$package/README.md"
 
 if [ -f LICENSE ]; then
@@ -110,8 +110,8 @@ set -euo pipefail
 
 prefix="${PREFIX:-/usr/local}"
 install -d "$prefix/bin"
-install -m 0755 "$(dirname "$0")/bin/malu" "$prefix/bin/malu"
-echo "Installed malu to $prefix/bin/malu"
+install -m 0755 "$(dirname "$0")/bin/maludb" "$prefix/bin/maludb"
+echo "Installed maludb to $prefix/bin/maludb"
 INSTALL
 chmod 0755 "$work_dir/$package/install.sh"
 

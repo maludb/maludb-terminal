@@ -1,6 +1,6 @@
 # maludb-terminal
 
-`malu` is a command-first Rust terminal CLI for sending notes, documents, and smoke-test
+`maludb` is a command-first Rust terminal CLI for sending notes, documents, and smoke-test
 workflows to the MaluDB API.
 
 ## Current Slice
@@ -8,79 +8,82 @@ workflows to the MaluDB API.
 Implemented commands:
 
 ```bash
-malu set-api https://api.maludb.org
-malu set-token malu_...
-malu set-token malu_... --store file
+maludb set-api https://api.maludb.org
+maludb set-token malu_...
+maludb set-token malu_... --store file
 
-malu token mint \
+maludb token mint \
   --pg-dbname maludb \
   --pg-user craig \
   --pg-password '...' \
   --device-name macbook
 
-malu profile create maludb-api \
+maludb profile create maludb-api \
   --api-url https://api.maludb.org \
   --user-name Craig \
   --project "maludb api" \
   --namespace default
-malu profile use maludb-api
-malu profile list
-malu profile show
-malu profile delete old-project
+maludb profile use maludb-api
+maludb profile list
+maludb profile show
+maludb profile delete old-project
 
-malu subjects add "FastAPI"
-malu subjects list
-malu subjects clear
+maludb subjects add "FastAPI"
+maludb subjects list
+maludb subjects clear
 
-malu hints add "This is about API smoke testing"
-malu hints list
-malu hints clear
+maludb hints add "This is about API smoke testing"
+maludb hints list
+maludb hints clear
 
-malu get config
-malu get subjects --query FastAPI --limit 5 --json
-malu get projects --query "maludb api"
-malu get documents --with attributes
+maludb get config
+maludb get subjects --query FastAPI --limit 5 --json
+maludb get projects --query "maludb api"
+maludb get documents --with attributes
 
-malu llm catalog                     # models the server offers, per task
-malu llm providers                   # which providers you have a key stored for
-malu llm set-key openai              # key read from a hidden prompt (or stdin)
-malu llm remove-key openai
-malu llm models                      # current task -> model choices
-malu llm use gpt-4o                  # extraction model (default --task extract)
-malu llm use text-embedding-3-small --task embed
-malu set-model chatgpt-4o            # legacy: pin the model sent with `malu note`
+maludb llm catalog                     # models the server offers, per task
+maludb llm providers                   # which providers you have a key stored for
+maludb llm set-key openai              # key read from a hidden prompt (or stdin)
+maludb llm remove-key openai
+maludb llm models                      # current task -> model choices
+maludb llm use gpt-4o                  # extraction model (default --task extract)
+maludb llm use text-embedding-3-small --task embed
+maludb set-model chatgpt-4o            # legacy: pin the model sent with `maludb note`
 
-malu note "Starting to debug the maludb api"
-malu doc push ./debug-log.md
-malu chat push --source codex ~/.codex/sessions/YYYY/MM/DD/session.jsonl
-malu chat push --source claude-code ~/.claude/projects/project/session.jsonl
+maludb note "Starting to debug the maludb api"
+maludb note --debug "The wednesday meeting is about to begin"  # print the API extraction response
+maludb doc push ./debug-log.md
+maludb chat push --source codex ~/.codex/sessions/YYYY/MM/DD/session.jsonl
+maludb chat push --source claude-code ~/.claude/projects/project/session.jsonl
 
-malu skill push ~/.claude/skills/pdf-processing   # upload a Claude Agent Skill bundle
-malu skill push-all                               # scan ~/.claude/skills + ./.claude/skills
-malu skill list --verb extract                    # tag-aware discovery
-malu skill pull pdf-processing --dest ./skills/   # reconstruct (paths + executable bits)
+maludb skill push ~/.claude/skills/pdf-processing   # upload a Claude Agent Skill bundle
+maludb skill push-all                               # scan ~/.claude/skills + ./.claude/skills
+maludb skill list --verb extract                    # tag-aware discovery
+maludb skill pull pdf-processing --dest ./skills/   # reconstruct (paths + executable bits)
 
-malu smoke health
-malu smoke config
-malu smoke note
-malu smoke document ./sample.md
-malu smoke search --query "debug API" --subject "FastAPI"
-malu smoke full
+maludb smoke health
+maludb smoke config
+maludb smoke note
+maludb smoke document ./sample.md
+maludb smoke search --query "debug API" --subject "FastAPI"
+maludb smoke full
 
-malu sync push
-malu sync pull
-malu sync status
-malu sync diff
+maludb sync push
+maludb sync pull
+maludb sync status
+maludb sync diff
 
-malu completions bash > malu.bash
+maludb completions bash > maludb.bash
 ```
 
 Notes use `POST /v1/memory/ingest` with a context preamble and active profile
 hints. The note's extraction model is resolved server-side from your
-`malu llm use` choice; set up once with `malu llm set-key <provider>` +
-`malu llm use <model>`. Provider keys are stored server-side only — never in
+`maludb llm use` choice; set up once with `maludb llm set-key <provider>` +
+`maludb llm use <model>`. Provider keys are stored server-side only — never in
 local files. Against an older server that requires a model in the request,
-pin one per profile with `malu set-model chatgpt-4o`.
+pin one per profile with `maludb set-model chatgpt-4o`. Use
+`maludb note --debug "..."` to print the API's full extraction response after
+ingest.
 Document pushes and chat log uploads use `POST /v1/memory/documents`,
 pass active subjects as API subjects, and store active hints in metadata. Chat
 logs from Codex and Claude Code are normalized into readable transcripts before

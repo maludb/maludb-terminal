@@ -2,12 +2,12 @@
 //!
 //! A Claude Agent Skill is a directory bundle: `SKILL.md` (YAML frontmatter +
 //! markdown instructions) plus optional `scripts/`, `references/`, `assets/`.
-//! `malu skill push` walks the directory, parses the frontmatter locally
+//! `maludb skill push` walks the directory, parses the frontmatter locally
 //! (no LLM in the CLI — extraction is server-side, like documents), and
 //! uploads the complete bundle to `POST /v1/skills/ingest`. The server
 //! recomputes the bundle hash, so re-pushing an unchanged skill is a no-op,
 //! and a changed skill becomes a NEW immutable version with fork lineage.
-//! `malu skill pull` reconstructs a bundle from the database into a local
+//! `maludb skill pull` reconstructs a bundle from the database into a local
 //! directory, restoring relative paths and executable bits.
 
 use std::collections::BTreeSet;

@@ -4,7 +4,7 @@
 //! The API server seeds a catalog of default model configurations
 //! (provider × model × task, with ready-made system prompts). A user stores
 //! their own provider API keys server-side (`PUT /v1/llm/providers/{p}`) and
-//! picks a model per task (`PUT /v1/llm/models/{t}`); `malu note` then works
+//! picks a model per task (`PUT /v1/llm/models/{t}`); `maludb note` then works
 //! without any model plumbing in the CLI. Provider keys are read from a
 //! hidden prompt (or stdin when piped) and sent straight to the server —
 //! they are never written to config.toml, credentials.toml, or the keyring.
@@ -90,7 +90,7 @@ pub(crate) enum LlmCommand {
     },
     /// Choose the model used for a task (default task: extract)
     Use {
-        /// Model name as shown by `malu llm catalog`
+        /// Model name as shown by `maludb llm catalog`
         model_name: String,
         #[arg(long, value_enum, default_value_t = LlmTask::Extract)]
         task: LlmTask,
@@ -187,7 +187,7 @@ fn providers(api: &ApiClient, json: bool) -> Result<()> {
         .cloned()
         .unwrap_or_default();
     if providers.is_empty() {
-        println!("No provider keys stored. Add one with `malu llm set-key <provider>`.");
+        println!("No provider keys stored. Add one with `maludb llm set-key <provider>`.");
         return Ok(());
     }
     for provider in &providers {

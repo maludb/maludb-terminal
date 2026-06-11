@@ -12,7 +12,7 @@ Follow the instructions it returns.
 
 ## Project Summary
 
-This repository is for `malu`, a cross-platform CLI for sending notes, documents, context, and smoke-test workflows to the MaluDB API.
+This repository is for `maludb`, a cross-platform CLI for sending notes, documents, context, and smoke-test workflows to the MaluDB API.
 
 The current API source repo is `/Users/user/maludb-python-simple`. Treat that repo as reference material unless the user explicitly asks to change it. The hosted API is `https://api.maludb.org`, and local development usually runs the FastAPI server at `http://localhost:8000`.
 
@@ -70,7 +70,7 @@ Each profile should include:
 - User identity, such as name and role.
 - Project name or identifier.
 - Memory namespace.
-- Optional legacy note-model override (`model`); unset means the server resolves the user's `malu llm use` choice.
+- Optional legacy note-model override (`model`); unset means the server resolves the user's `maludb llm use` choice.
 - Active subjects.
 - Active hints.
 - Smoke-test defaults.
@@ -99,57 +99,57 @@ hints = [
 Initial command shape:
 
 ```bash
-malu set-api https://api.maludb.org
-malu set-token malu_...
+maludb set-api https://api.maludb.org
+maludb set-token malu_...
 
-malu profile create maludb-api
-malu profile use maludb-api
-malu profile list
-malu profile show
-malu profile delete old-project
+maludb profile create maludb-api
+maludb profile use maludb-api
+maludb profile list
+maludb profile show
+maludb profile delete old-project
 
-malu get config
-malu get subjects
-malu get projects
-malu get documents
+maludb get config
+maludb get subjects
+maludb get projects
+maludb get documents
 
-malu llm catalog
-malu llm providers
-malu llm set-key <provider>
-malu llm remove-key <provider>
-malu llm models
-malu llm use <model> [--task extract|skill-extract|embed]
-malu set-model <model>   # legacy per-profile override for `malu note`
+maludb llm catalog
+maludb llm providers
+maludb llm set-key <provider>
+maludb llm remove-key <provider>
+maludb llm models
+maludb llm use <model> [--task extract|skill-extract|embed]
+maludb set-model <model>   # legacy per-profile override for `maludb note`
 
-malu subjects add "FastAPI"
-malu subjects clear
-malu subjects list
+maludb subjects add "FastAPI"
+maludb subjects clear
+maludb subjects list
 
-malu hints add "This is about API smoke testing"
-malu hints clear
-malu hints list
+maludb hints add "This is about API smoke testing"
+maludb hints clear
+maludb hints list
 
-malu note "Starting to debug the maludb api"
-malu doc push ./debug-log.md
+maludb note "Starting to debug the maludb api"
+maludb doc push ./debug-log.md
 
-malu smoke health
-malu smoke config
-malu smoke note
-malu smoke document ./sample.md
-malu smoke search --subject "maludb api"
-malu smoke full
+maludb smoke health
+maludb smoke config
+maludb smoke note
+maludb smoke document ./sample.md
+maludb smoke search --subject "maludb api"
+maludb smoke full
 
-malu sync push
-malu sync pull
-malu sync status
-malu sync diff
+maludb sync push
+maludb sync pull
+maludb sync status
+maludb sync diff
 ```
 
 `set-api`, `set-token`, `subjects add`, and `hints add` apply to the active profile by default.
 
 ## Context Assembly
 
-`malu note` should enrich short user input before sending it through the memory pipeline.
+`maludb note` should enrich short user input before sending it through the memory pipeline.
 
 Example generated text:
 
@@ -184,10 +184,10 @@ Do sync:
 Do not sync raw API tokens as plain config. On a new computer the user should bootstrap with:
 
 ```bash
-malu set-api https://api.maludb.org
-malu set-token malu_...
-malu sync pull
-malu profile use maludb-api
+maludb set-api https://api.maludb.org
+maludb set-token malu_...
+maludb sync pull
+maludb profile use maludb-api
 ```
 
 For v1, use an internal note as remote settings storage if no dedicated API endpoint exists:
@@ -215,7 +215,7 @@ Use `directories` for config paths:
 Use `keyring` where available. On Ubuntu headless systems, support an explicit file fallback:
 
 ```bash
-malu set-token malu_... --store file
+maludb set-token malu_... --store file
 ```
 
 The fallback credentials file must use strict permissions, such as mode `0600`.
@@ -229,7 +229,7 @@ Build targets to plan for:
 
 ## Smoke Testing Goal
 
-`malu smoke full` should run a real workflow against the active profile:
+`maludb smoke full` should run a real workflow against the active profile:
 
 1. Check `/health`.
 2. Check authenticated API access.

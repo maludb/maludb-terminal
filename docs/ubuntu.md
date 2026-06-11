@@ -1,6 +1,6 @@
 # Ubuntu Linux Build And Install
 
-This runbook covers a fresh Ubuntu server install for `malu`, including source
+This runbook covers a fresh Ubuntu server install for `maludb`, including source
 checkout, verification, packaging, local installation, and smoke testing.
 
 The Linux release target is:
@@ -49,7 +49,7 @@ cargo fmt --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 cargo build --release --target x86_64-unknown-linux-gnu
-./target/x86_64-unknown-linux-gnu/release/malu --help
+./target/x86_64-unknown-linux-gnu/release/maludb --help
 ```
 
 `reqwest` uses Rustls, so OpenSSL development packages are not required for
@@ -57,7 +57,7 @@ HTTP. `libdbus-1-dev` supports the Linux keyring backend. On headless servers,
 use file token storage instead of the keyring:
 
 ```bash
-malu set-token malu_... --store file
+maludb set-token malu_... --store file
 ```
 
 ## Build A Release Bundle
@@ -66,12 +66,12 @@ Create the Linux tarball and verify its checksum:
 
 ```bash
 scripts/package-release.sh --target x86_64-unknown-linux-gnu
-(cd dist && sha256sum -c malu-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256)
+(cd dist && sha256sum -c maludb-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256)
 ```
 
 The bundle contains:
 
-- `bin/malu`
+- `bin/maludb`
 - `README.md`
 - `install.sh`
 
@@ -83,10 +83,10 @@ Install for the current user:
 
 ```bash
 tmpdir="$(mktemp -d)"
-tar -xzf dist/malu-0.1.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
-PREFIX="$HOME/.local" "$tmpdir/malu-0.1.0-x86_64-unknown-linux-gnu/install.sh"
+tar -xzf dist/maludb-0.1.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
+PREFIX="$HOME/.local" "$tmpdir/maludb-0.1.0-x86_64-unknown-linux-gnu/install.sh"
 export PATH="$HOME/.local/bin:$PATH"
-malu --help
+maludb --help
 ```
 
 Persist the user-local install path for future shells:
@@ -100,17 +100,17 @@ Install system-wide instead:
 
 ```bash
 tmpdir="$(mktemp -d)"
-tar -xzf dist/malu-0.1.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
-cd "$tmpdir/malu-0.1.0-x86_64-unknown-linux-gnu"
+tar -xzf dist/maludb-0.1.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
+cd "$tmpdir/maludb-0.1.0-x86_64-unknown-linux-gnu"
 sudo ./install.sh
-malu --help
+maludb --help
 ```
 
-The system-wide installer defaults to `/usr/local/bin/malu`. Override the prefix
+The system-wide installer defaults to `/usr/local/bin/maludb`. Override the prefix
 when needed:
 
 ```bash
-sudo PREFIX=/opt/malu ./install.sh
+sudo PREFIX=/opt/maludb ./install.sh
 ```
 
 ## Configure Hosted API Access
@@ -119,34 +119,34 @@ Create a profile and store the token in the file credential store on headless
 Ubuntu:
 
 ```bash
-malu profile create maludb-api \
+maludb profile create maludb-api \
   --api-url https://api.maludb.org \
   --user-name Craig \
   --project "maludb api" \
   --namespace default
-malu set-token malu_... --store file
-malu subjects add "MaluDB API"
+maludb set-token malu_... --store file
+maludb subjects add "MaluDB API"
 ```
 
-Set up the LLM extraction model for `malu note` (one-time; the key is stored
+Set up the LLM extraction model for `maludb note` (one-time; the key is stored
 server-side, never in local files):
 
 ```bash
-malu llm catalog            # see what the server offers
-malu llm set-key openai     # paste the key at the hidden prompt
-malu llm use gpt-4o         # extraction model for notes
-malu llm models             # verify the task -> model choices
+maludb llm catalog            # see what the server offers
+maludb llm set-key openai     # paste the key at the hidden prompt
+maludb llm use gpt-4o         # extraction model for notes
+maludb llm models             # verify the task -> model choices
 ```
 
 On headless servers the key can be piped instead of typed:
-`printf '%s\n' "$OPENAI_API_KEY" | malu llm set-key openai`.
+`printf '%s\n' "$OPENAI_API_KEY" | maludb llm set-key openai`.
 
 Run smoke tests:
 
 ```bash
-malu smoke health
-malu smoke config
-malu smoke full
+maludb smoke health
+maludb smoke config
+maludb smoke full
 ```
 
 ## Configure Local API Access
@@ -154,12 +154,12 @@ malu smoke full
 If the API is running locally on the Ubuntu server:
 
 ```bash
-malu profile create local-api \
+maludb profile create local-api \
   --api-url http://localhost:8000 \
   --namespace default
-malu profile use local-api
-malu set-token malu_... --store file
-malu smoke health
+maludb profile use local-api
+maludb set-token malu_... --store file
+maludb smoke health
 ```
 
 ## Update And Rebuild
