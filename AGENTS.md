@@ -112,6 +112,8 @@ maludb get config
 maludb get subjects
 maludb get projects
 maludb get documents
+maludb get note --subject-like <pattern> [--verb-like <fuzzy> | --action <exact>] [--all-sources]
+maludb get note "<free text>"
 
 maludb llm catalog
 maludb llm providers

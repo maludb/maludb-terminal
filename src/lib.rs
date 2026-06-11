@@ -164,6 +164,29 @@ enum GetCommand {
         #[arg(long = "with")]
         with_: Option<String>,
     },
+    /// Retrieve notes by the subjects/verbs of their extracted edges
+    Note {
+        /// Free text, e.g. `maludb get note "Install Ubuntu"` (parsed server-side)
+        query: Option<String>,
+        /// Pattern matched anywhere in a subject name or alias (repeatable)
+        #[arg(long = "subject-like")]
+        subject_like: Vec<String>,
+        /// Fuzzy verb match: "installation" finds the verb "install"
+        #[arg(long = "verb-like")]
+        verb_like: Option<String>,
+        /// Exact verb (canonical name or alias, case-insensitive)
+        #[arg(long)]
+        action: Option<String>,
+        #[arg(long)]
+        limit: Option<u16>,
+        #[arg(long)]
+        offset: Option<u32>,
+        /// Search every stored document, not just notes
+        #[arg(long = "all-sources")]
+        all_sources: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -343,6 +366,11 @@ struct MemoryIngestRequest {
     text: String,
     namespace: String,
     hints: Vec<Value>,
+    /// Notes are stamped source_type "note" so `maludb get note` finds them
+    /// by default. Servers older than maludb_core 0.98.0 ignore the field.
+    source_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -633,6 +661,53 @@ fn handle_get(paths: &Paths, command: GetCommand) -> Result<()> {
                 return Ok(());
             }
             print_documents(&body);
+            Ok(())
+        }
+        GetCommand::Note {
+            query,
+            subject_like,
+            verb_like,
+            action,
+            limit,
+            offset,
+            all_sources,
+            json,
+        } => {
+            if query.is_none() && subject_like.is_empty() && verb_like.is_none() && action.is_none()
+            {
+                bail!(
+                    "Provide free text (maludb get note \"Install Ubuntu\") or at least one of \
+                     --subject-like, --verb-like, --action"
+                );
+            }
+            let mut params: Vec<(&str, String)> = Vec::new();
+            if let Some(query) = query {
+                params.push(("q", query));
+            }
+            for pattern in subject_like {
+                params.push(("subject_like", pattern));
+            }
+            if let Some(verb_like) = verb_like {
+                params.push(("verb_like", verb_like));
+            }
+            if let Some(action) = action {
+                params.push(("action", action));
+            }
+            if let Some(limit) = limit {
+                params.push(("limit", limit.to_string()));
+            }
+            if let Some(offset) = offset {
+                params.push(("offset", offset.to_string()));
+            }
+            if all_sources {
+                params.push(("all_sources", "true".to_string()));
+            }
+            let body = api.get_json_query("/v1/memory/notes", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_notes(&body);
             Ok(())
         }
     }
@@ -1058,11 +1133,19 @@ fn memory_ingest_request(profile: &Profile, content: &str) -> MemoryIngestReques
         }));
     }
 
+    let title = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(80).collect::<String>());
+
     MemoryIngestRequest {
         model: profile.model.clone(),
         text,
         namespace: profile.namespace.clone(),
         hints,
+        source_type: "note",
+        title,
     }
 }
 
@@ -1228,6 +1311,44 @@ fn print_documents(body: &Value) {
         let title = string_field(document, "title", "(untitled)");
         let source_type = string_field(document, "source_type", "document");
         println!("{id} {title} {source_type}");
+    }
+}
+
+fn print_notes(body: &Value) {
+    let Some(notes) = body.get("notes").and_then(Value::as_array) else {
+        println!("No notes returned");
+        return;
+    };
+
+    if notes.is_empty() {
+        println!("No notes returned");
+        return;
+    }
+
+    for note in notes {
+        let id = item_id(note);
+        let title = string_field(note, "title", "(untitled)");
+        let source_type = string_field(note, "source_type", "note");
+        let match_count = note.get("match_count").and_then(Value::as_i64).unwrap_or(0);
+        let edge_word = if match_count == 1 { "edge" } else { "edges" };
+        println!("{id} {title} ({source_type}, {match_count} {edge_word})");
+        if let Some(edges) = note.get("matched_edges").and_then(Value::as_array) {
+            for edge in edges {
+                let subject = string_field(edge, "subject_name", "?");
+                let verb = string_field(edge, "verb_name", "?");
+                let object = string_field(edge, "object_name", "?");
+                let via = string_field(edge, "match_via", "?");
+                println!("  {subject} --{verb}--> {object} [{via}]");
+            }
+        }
+        if let Some(snippet) = note
+            .get("snippet")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|snippet| !snippet.is_empty())
+        {
+            println!("  {}", snippet.replace('\n', " "));
+        }
     }
 }
 
