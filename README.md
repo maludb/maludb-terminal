@@ -41,6 +41,15 @@ malu get subjects --query FastAPI --limit 5 --json
 malu get projects --query "maludb api"
 malu get documents --with attributes
 
+malu llm catalog                     # models the server offers, per task
+malu llm providers                   # which providers you have a key stored for
+malu llm set-key openai              # key read from a hidden prompt (or stdin)
+malu llm remove-key openai
+malu llm models                      # current task -> model choices
+malu llm use gpt-4o                  # extraction model (default --task extract)
+malu llm use text-embedding-3-small --task embed
+malu set-model chatgpt-4o            # legacy: pin the model sent with `malu note`
+
 malu note "Starting to debug the maludb api"
 malu doc push ./debug-log.md
 malu chat push --source codex ~/.codex/sessions/YYYY/MM/DD/session.jsonl
@@ -67,7 +76,12 @@ malu completions bash > malu.bash
 ```
 
 Notes use `POST /v1/memory/ingest` with a context preamble and active profile
-hints. Document pushes and chat log uploads use `POST /v1/memory/documents`,
+hints. The note's extraction model is resolved server-side from your
+`malu llm use` choice; set up once with `malu llm set-key <provider>` +
+`malu llm use <model>`. Provider keys are stored server-side only — never in
+local files. Against an older server that requires a model in the request,
+pin one per profile with `malu set-model chatgpt-4o`.
+Document pushes and chat log uploads use `POST /v1/memory/documents`,
 pass active subjects as API subjects, and store active hints in metadata. Chat
 logs from Codex and Claude Code are normalized into readable transcripts before
 upload and tagged with their original source in metadata.

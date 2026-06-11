@@ -289,7 +289,6 @@ fn note_posts_contextualized_text_to_memory_ingest() {
         .mock("POST", "/v1/memory/ingest")
         .match_header("authorization", "Bearer malu_testtoken")
         .match_body(Matcher::AllOf(vec![
-            Matcher::Regex(r#""model":"chatgpt-4o""#.to_string()),
             Matcher::Regex(r#""namespace":"default""#.to_string()),
             Matcher::Regex(r#""subject-type":"project""#.to_string()),
             Matcher::Regex(r#""subject-name":"maludb api""#.to_string()),
@@ -299,6 +298,14 @@ fn note_posts_contextualized_text_to_memory_ingest() {
             Matcher::Regex(r#"Context:\\n- User: Craig"#.to_string()),
             Matcher::Regex(r#"Note:\\nStarting to debug the maludb api"#.to_string()),
         ]))
+        // No model override set: the field is omitted so the server resolves
+        // the user's `malu llm use` choice.
+        .match_request(|request| {
+            !request
+                .utf8_lossy_body()
+                .expect("request body")
+                .contains("\"model\"")
+        })
         .with_status(201)
         .with_body(r#"{"document_id":42,"result":{"created":{},"skipped":[]}}"#)
         .create();
@@ -322,6 +329,340 @@ fn note_posts_contextualized_text_to_memory_ingest() {
         .stdout(predicate::str::contains("Ingested note as document 42"));
 
     ingest.assert();
+}
+
+#[test]
+fn note_sends_model_when_profile_override_set() {
+    let mut server = mockito::Server::new();
+    let ingest = server
+        .mock("POST", "/v1/memory/ingest")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::Regex(r#""model":"chatgpt-4o""#.to_string()))
+        .with_status(201)
+        .with_body(r#"{"document_id":43,"result":{}}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["set-model", "chatgpt-4o"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Set note model override to chatgpt-4o for profile maludb-api",
+        ));
+    let config = std::fs::read_to_string(config_dir.path().join("config.toml"))
+        .expect("config file should be written");
+    assert!(config.contains("model = \"chatgpt-4o\""));
+
+    malu(&config_dir)
+        .args(["note", "Pinning the legacy model"])
+        .assert()
+        .success();
+    ingest.assert();
+
+    malu(&config_dir)
+        .args(["set-model", "--clear"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Cleared note model override for profile maludb-api",
+        ));
+    let config = std::fs::read_to_string(config_dir.path().join("config.toml"))
+        .expect("config file should be written");
+    assert!(!config.contains("model = \"chatgpt-4o\""));
+}
+
+#[test]
+fn note_model_errors_print_actionable_guidance() {
+    let mut server = mockito::Server::new();
+    server
+        .mock("POST", "/v1/memory/ingest")
+        .with_status(409)
+        .with_body(r#"{"error":{"code":"model_api_key_missing","message":"No API key stored for provider \"openai\"."}}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["note", "anything"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("API error model_api_key_missing"))
+        .stderr(predicate::str::contains("malu llm set-key"));
+}
+
+#[test]
+fn note_unconfigured_model_error_suggests_llm_use() {
+    let mut server = mockito::Server::new();
+    server
+        .mock("POST", "/v1/memory/ingest")
+        .with_status(422)
+        .with_body(r#"{"error":{"code":"model_not_configured","message":"No prompt configured."}}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["note", "anything"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("API error model_not_configured"))
+        .stderr(predicate::str::contains("malu llm use"));
+}
+
+// ---------------------------------------------------------------------------
+// LLM commands — catalog / providers / set-key / remove-key / models / use
+// ---------------------------------------------------------------------------
+
+#[test]
+fn llm_catalog_lists_models_and_key_status() {
+    let mut server = mockito::Server::new();
+    let catalog = server
+        .mock("GET", "/v1/llm/catalog")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .with_status(200)
+        .with_body(
+            r#"{"tasks":["embed","extract","skill_extract"],"models":[
+                {"provider":"openai","model_name":"gpt-4o","model_identifier":"gpt-4o","api_format":"openai","base_url":"https://api.openai.com/v1","task":"extract","max_tokens":2048,"has_system_prompt":true,"key_set":true,"is_choice":true},
+                {"provider":"anthropic","model_name":"claude-sonnet","model_identifier":"claude-sonnet-4-6","api_format":"anthropic","base_url":"https://api.anthropic.com","task":"extract","max_tokens":4096,"has_system_prompt":true,"key_set":false,"is_choice":false}
+            ]}"#,
+        )
+        .expect(2)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["llm", "catalog"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gpt-4o"))
+        .stdout(predicate::str::contains("key:set"))
+        .stdout(predicate::str::contains("(current choice)"))
+        .stdout(predicate::str::contains("claude-sonnet"))
+        .stdout(predicate::str::contains("key:missing"));
+
+    malu(&config_dir)
+        .args(["llm", "catalog", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"model_identifier\":\"claude-sonnet-4-6\"",
+        ));
+
+    catalog.assert();
+}
+
+#[test]
+fn llm_set_key_reads_key_from_stdin_and_puts_provider() {
+    let mut server = mockito::Server::new();
+    let put = server
+        .mock("PUT", "/v1/llm/providers/openai")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::PartialJson(json!({ "api_key": "sk-test-123" })))
+        .with_status(200)
+        .with_body(r#"{"provider":{"provider":"openai","key_set":true,"base_url":null}}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["llm", "set-key", "openai"])
+        .write_stdin("sk-test-123\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Stored openai API key on the server",
+        ));
+    put.assert();
+
+    // The provider key lives server-side only — never in local files.
+    let config = std::fs::read_to_string(config_dir.path().join("config.toml"))
+        .expect("config file should be written");
+    assert!(!config.contains("sk-test-123"));
+    let credentials = std::fs::read_to_string(config_dir.path().join("credentials.toml"))
+        .expect("credential file should be written");
+    assert!(!credentials.contains("sk-test-123"));
+}
+
+#[test]
+fn llm_set_key_with_base_url_includes_it() {
+    let mut server = mockito::Server::new();
+    let put = server
+        .mock("PUT", "/v1/llm/providers/ollama")
+        .match_body(Matcher::PartialJson(json!({
+            "api_key": "ol-key",
+            "base_url": "http://my-box:11434/v1",
+        })))
+        .with_status(200)
+        .with_body(
+            r#"{"provider":{"provider":"ollama","key_set":true,"base_url":"http://my-box:11434/v1"}}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args([
+            "llm",
+            "set-key",
+            "ollama",
+            "--base-url",
+            "http://my-box:11434/v1",
+        ])
+        .write_stdin("ol-key\n")
+        .assert()
+        .success();
+    put.assert();
+}
+
+#[test]
+fn llm_remove_key_deletes_provider_and_tolerates_empty_body() {
+    let mut server = mockito::Server::new();
+    let delete = server
+        .mock("DELETE", "/v1/llm/providers/openai")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .with_status(204)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["llm", "remove-key", "openai"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Removed openai API key from the server",
+        ));
+    delete.assert();
+}
+
+#[test]
+fn llm_providers_lists_key_state() {
+    let mut server = mockito::Server::new();
+    let providers = server
+        .mock("GET", "/v1/llm/providers")
+        .with_status(200)
+        .with_body(
+            r#"{"providers":[{"provider":"openai","key_set":true,"base_url":null,"updated_at":"2026-06-10T12:00:00Z"}]}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["llm", "providers"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("openai"))
+        .stdout(predicate::str::contains("key:set"));
+    providers.assert();
+}
+
+#[test]
+fn llm_models_shows_task_choices() {
+    let mut server = mockito::Server::new();
+    let models = server
+        .mock("GET", "/v1/llm/models")
+        .with_status(200)
+        .with_body(
+            r#"{"models":[
+                {"task":"extract","model_name":"claude-sonnet","provider":"anthropic","chosen":true,"system_prompt_override":false},
+                {"task":"embed","model_name":null,"provider":null,"chosen":false,"system_prompt_override":false}
+            ]}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["llm", "models"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("anthropic/claude-sonnet"))
+        .stdout(predicate::str::contains("(chosen)"))
+        .stdout(predicate::str::contains("(server default)"));
+    models.assert();
+}
+
+#[test]
+fn llm_use_puts_model_choice_for_task() {
+    let mut server = mockito::Server::new();
+    let put_extract = server
+        .mock("PUT", "/v1/llm/models/extract")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::PartialJson(json!({ "model_name": "claude-sonnet" })))
+        .with_status(200)
+        .with_body(
+            r#"{"choice":{"task":"extract","model_name":"claude-sonnet","provider":"anthropic","system_prompt_override":false,"key_set":false,"warning":"No API key stored for provider \"anthropic\". Set one via PUT /v1/llm/providers/anthropic."}}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["llm", "use", "claude-sonnet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Using claude-sonnet for the extract task",
+        ))
+        .stdout(predicate::str::contains("Warning: No API key stored"));
+    put_extract.assert();
+
+    // kebab-case task on the CLI maps to the snake_case wire path, and a
+    // prompt file becomes the system_prompt field.
+    let prompt_path = config_dir.path().join("skill-prompt.txt");
+    std::fs::write(&prompt_path, "You extract skills.").expect("write prompt file");
+    let put_skill = server
+        .mock("PUT", "/v1/llm/models/skill_extract")
+        .match_body(Matcher::PartialJson(json!({
+            "model_name": "gpt-4o",
+            "system_prompt": "You extract skills.",
+        })))
+        .with_status(200)
+        .with_body(
+            r#"{"choice":{"task":"skill_extract","model_name":"gpt-4o","provider":"openai","system_prompt_override":true,"key_set":true}}"#,
+        )
+        .create();
+
+    malu(&config_dir)
+        .args([
+            "llm",
+            "use",
+            "gpt-4o",
+            "--task",
+            "skill-extract",
+            "--system-prompt-file",
+            prompt_path.to_str().expect("utf8 path"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Using gpt-4o for the skill_extract task",
+        ));
+    put_skill.assert();
 }
 
 #[test]

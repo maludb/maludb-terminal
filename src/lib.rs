@@ -12,7 +12,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+mod llm;
 mod skills;
+use llm::LlmCommand;
 use skills::SkillCommand;
 
 #[derive(Debug, Parser)]
@@ -31,6 +33,14 @@ enum Commands {
         token: String,
         #[arg(long, value_enum, default_value_t = TokenStore::Keyring)]
         store: TokenStore,
+    },
+    /// Pin the model sent with `malu note` (legacy servers only; new servers
+    /// use your `malu llm use` choice when this is unset)
+    SetModel {
+        model: Option<String>,
+        /// Clear the override so the server resolves the model
+        #[arg(long)]
+        clear: bool,
     },
     Token {
         #[command(subcommand)]
@@ -62,6 +72,10 @@ enum Commands {
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
+    },
+    Llm {
+        #[command(subcommand)]
+        command: LlmCommand,
     },
     Chat {
         #[command(subcommand)]
@@ -240,6 +254,10 @@ struct Profile {
     user_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     project: Option<String>,
+    /// Legacy model override for `malu note`; unset = the server resolves
+    /// the user's `malu llm use` choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     namespace: String,
     #[serde(default)]
     subjects: Vec<String>,
@@ -313,7 +331,10 @@ struct MemoryDocumentRequest {
 
 #[derive(Debug, Serialize)]
 struct MemoryIngestRequest {
-    model: String,
+    /// Omitted by default — the server resolves the user's extract-model
+    /// choice. Set per-profile via `malu set-model` for legacy servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     text: String,
     namespace: String,
     hints: Vec<Value>,
@@ -345,6 +366,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
     match command {
         Commands::SetApi { api_url } => set_api(paths, api_url),
         Commands::SetToken { token, store } => set_token(paths, token, store),
+        Commands::SetModel { model, clear } => set_model(paths, model, clear),
         Commands::Token { command } => handle_token(paths, command),
         Commands::Profile { command } => handle_profile(paths, command),
         Commands::Subjects { command } => handle_collection(paths, command, Collection::Subjects),
@@ -353,6 +375,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
         Commands::Note { text } => handle_note(paths, text),
         Commands::Doc { command } => handle_doc(paths, command),
         Commands::Skill { command } => skills::handle_skill(paths, command),
+        Commands::Llm { command } => llm::handle_llm(paths, command),
         Commands::Chat { command } => handle_chat(paths, command),
         Commands::Smoke { command } => handle_smoke(paths, command),
         Commands::Sync { command } => handle_sync(paths, command),
@@ -398,6 +421,27 @@ fn set_token(paths: &Paths, token: String, store: TokenStore) -> Result<()> {
         "Stored token for profile {profile_name} in {} credential store",
         actual_store.as_str()
     );
+    Ok(())
+}
+
+fn set_model(paths: &Paths, model: Option<String>, clear: bool) -> Result<()> {
+    let mut config = Config::load(paths)?;
+    let (profile_name, profile) = config.active_profile_mut()?;
+    match (model, clear) {
+        (Some(model), false) => {
+            profile.model = Some(model.clone());
+            profile.touch();
+            config.save(paths)?;
+            println!("Set note model override to {model} for profile {profile_name}");
+        }
+        (None, true) => {
+            profile.model = None;
+            profile.touch();
+            config.save(paths)?;
+            println!("Cleared note model override for profile {profile_name}");
+        }
+        _ => bail!("pass a model name or --clear"),
+    }
     Ok(())
 }
 
@@ -1000,7 +1044,7 @@ fn memory_ingest_request(profile: &Profile, content: &str) -> MemoryIngestReques
     }
 
     MemoryIngestRequest {
-        model: "chatgpt-4o".to_string(),
+        model: profile.model.clone(),
         text,
         namespace: profile.namespace.clone(),
         hints,
@@ -1082,6 +1126,10 @@ fn print_profile(name: &str, profile: &Profile) {
         profile.project.as_deref().unwrap_or("(unset)")
     );
     println!("Namespace: {}", profile.namespace);
+    println!(
+        "Note model: {}",
+        profile.model.as_deref().unwrap_or("(server default)")
+    );
     println!("Subjects: {}", display_list(&profile.subjects));
     println!("Hints: {}", display_list(&profile.hints));
 }
@@ -1548,6 +1596,23 @@ impl ApiClient {
         decode_response(response)
     }
 
+    fn put_value(&self, path: &str, body: &Value) -> Result<Value> {
+        let response = self
+            .request(reqwest::Method::PUT, path)
+            .json(body)
+            .send()
+            .context("failed to send API request")?;
+        decode_response(response)
+    }
+
+    fn delete_value(&self, path: &str) -> Result<Value> {
+        let response = self
+            .request(reqwest::Method::DELETE, path)
+            .send()
+            .context("failed to send API request")?;
+        decode_response_allow_empty(response)
+    }
+
     fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         path: &str,
@@ -1573,21 +1638,58 @@ impl ApiClient {
 }
 
 fn decode_response(response: reqwest::blocking::Response) -> Result<Value> {
+    decode_response_inner(response, false)
+}
+
+/// Like `decode_response`, but an empty success body (e.g. a 204 DELETE)
+/// decodes to `Value::Null` instead of a parse error.
+fn decode_response_allow_empty(response: reqwest::blocking::Response) -> Result<Value> {
+    decode_response_inner(response, true)
+}
+
+fn decode_response_inner(
+    response: reqwest::blocking::Response,
+    allow_empty: bool,
+) -> Result<Value> {
     let status = response.status();
     let body = response.text().context("failed to read API response")?;
 
     if !status.is_success() {
         if let Ok(envelope) = serde_json::from_str::<ErrorEnvelope>(&body) {
-            bail!(
-                "API error {}: {}",
-                envelope.error.code,
-                envelope.error.message
-            );
+            match error_hint(&envelope.error.code) {
+                Some(hint) => bail!(
+                    "API error {}: {}\n{hint}",
+                    envelope.error.code,
+                    envelope.error.message
+                ),
+                None => bail!(
+                    "API error {}: {}",
+                    envelope.error.code,
+                    envelope.error.message
+                ),
+            }
         }
         bail!("API error HTTP {status}: {body}");
     }
 
+    if allow_empty && body.trim().is_empty() {
+        return Ok(Value::Null);
+    }
     serde_json::from_str(&body).context("failed to parse API response as JSON")
+}
+
+/// Actionable next steps for the model-setup errors an end user can fix
+/// from the CLI.
+fn error_hint(code: &str) -> Option<&'static str> {
+    match code {
+        "model_not_configured" => Some(
+            "Hint: choose an extraction model with `malu llm use <model>` (see `malu llm catalog`).",
+        ),
+        "model_api_key_missing" => Some(
+            "Hint: store your provider API key with `malu llm set-key <provider>` (see `malu llm providers`).",
+        ),
+        _ => None,
+    }
 }
 
 impl Config {
@@ -1688,6 +1790,7 @@ impl Profile {
             token_store: None,
             user_name: None,
             project: None,
+            model: None,
             namespace: "default".to_string(),
             subjects: Vec::new(),
             hints: Vec::new(),

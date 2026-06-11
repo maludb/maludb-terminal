@@ -2213,6 +2213,7 @@ dependencies = [
  "mockito",
  "predicates",
  "reqwest",
+ "rpassword",
  "serde",
  "serde_json",
  "serde_yaml",
