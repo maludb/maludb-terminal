@@ -56,7 +56,10 @@ maludb doc push ./debug-log.md
 maludb chat push --source codex ~/.codex/sessions/YYYY/MM/DD/session.jsonl
 maludb chat push --source claude-code ~/.claude/projects/project/session.jsonl
 
-maludb skill push ~/.claude/skills/pdf-processing   # upload a Claude Agent Skill bundle
+maludb skill add php-htmx-auth                      # resolve a skill by name from ~/.claude/skills or ./.claude/skills
+maludb skills add php-htmx-auth                      # `skills` is an alias for `skill`
+maludb skill add ~/.claude/skills/pdf-processing    # ...or pass an explicit path
+maludb skill push ~/.claude/skills/pdf-processing   # upload a Claude Agent Skill bundle (by path)
 maludb skill push-all                               # scan ~/.claude/skills + ./.claude/skills
 maludb skill list --verb extract                    # tag-aware discovery
 maludb skill pull pdf-processing --dest ./skills/   # reconstruct (paths + executable bits)

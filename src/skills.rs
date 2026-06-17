@@ -1,7 +1,10 @@
-//! Agent-skill commands — push, push-all, list, pull.
+//! Agent-skill commands — add, push, push-all, list, pull.
 //!
 //! A Claude Agent Skill is a directory bundle: `SKILL.md` (YAML frontmatter +
 //! markdown instructions) plus optional `scripts/`, `references/`, `assets/`.
+//! `maludb skill add` resolves a bare skill name (e.g. `php-htmx-auth`) from the
+//! standard skill roots — or takes an explicit path — and hands it to the same
+//! upload path as `push`.
 //! `maludb skill push` walks the directory, parses the frontmatter locally
 //! (no LLM in the CLI — extraction is server-side, like documents), and
 //! uploads the complete bundle to `POST /v1/skills/ingest`. The server
@@ -29,6 +32,22 @@ const MAX_BUNDLE_BYTES: u64 = 30 * 1024 * 1024;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum SkillCommand {
+    /// Add a skill by name (resolved from skill roots) or by path
+    Add {
+        /// Skill name (e.g. php-htmx-auth) or a path to the skill dir / SKILL.md
+        target: String,
+        /// Server-side extraction model (omit for the deterministic fallback)
+        #[arg(long)]
+        model: Option<String>,
+        /// Mark this revision as NOT materially different: supersede its parent
+        #[arg(long)]
+        supersede: bool,
+        /// Show what would be sent/judged without writing anything
+        #[arg(long)]
+        preview: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Upload one skill directory (or its SKILL.md path) as a new skill version
     Push {
         path: PathBuf,
@@ -89,6 +108,19 @@ pub(crate) fn handle_skill(paths: &Paths, command: SkillCommand) -> Result<()> {
     let api = ApiClient::new(&profile.api_url, Some(token));
 
     match command {
+        SkillCommand::Add {
+            target,
+            model,
+            supersede,
+            preview,
+            json,
+        } => {
+            let path = resolve_skill_target(&target)?;
+            if !json && !preview {
+                println!("Using {}", path.display());
+            }
+            push_one(&api, &path, model.as_deref(), supersede, preview, json)
+        }
         SkillCommand::Push {
             path,
             model,
@@ -394,6 +426,47 @@ fn push_one(
         }
     }
     Ok(())
+}
+
+/// Resolve a `skill add` argument to a skill directory (or SKILL.md path).
+///
+/// `target` may be either an explicit path or a bare skill name:
+/// - if it already points at a directory containing `SKILL.md` (or at a
+///   `SKILL.md` file), it is used as-is — same as `push`;
+/// - otherwise, if it is a bare name, look for `<root>/<name>/SKILL.md` in the
+///   standard skill roots (`~/.claude/skills`, then `./.claude/skills`) and
+///   return the first match.
+fn resolve_skill_target(target: &str) -> Result<PathBuf> {
+    let as_path = Path::new(target);
+
+    // An explicit path that already points at a skill bundle is used directly.
+    if as_path.join("SKILL.md").is_file()
+        || (as_path.is_file() && as_path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md"))
+    {
+        return Ok(as_path.to_path_buf());
+    }
+
+    // Anything containing a path separator was meant as a path, not a name.
+    if target.contains('/') || target.contains(std::path::MAIN_SEPARATOR) {
+        bail!("{target} is not a skill directory (no SKILL.md found)");
+    }
+
+    // Bare name: resolve <root>/<name>/SKILL.md from the standard skill roots.
+    let roots = default_roots();
+    for root in &roots {
+        let candidate = root.join(target);
+        if candidate.join("SKILL.md").is_file() {
+            return Ok(candidate);
+        }
+    }
+    bail!(
+        "no skill named '{target}' found — looked for {target}/SKILL.md under {}",
+        roots
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 }
 
 fn default_roots() -> Vec<PathBuf> {

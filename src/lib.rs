@@ -74,6 +74,7 @@ enum Commands {
         #[command(subcommand)]
         command: DocCommand,
     },
+    #[command(visible_alias = "skills")]
     Skill {
         #[command(subcommand)]
         command: SkillCommand,

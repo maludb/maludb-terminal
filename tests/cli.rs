@@ -1466,6 +1466,115 @@ fn skill_push_reports_supersession_and_reuse() {
         .stdout(predicate::str::contains("unchanged"));
 }
 
+/// Writes `<home>/.claude/skills/<name>/` with a SKILL.md plus a
+/// `references/csrf-pattern.md`, mirroring a real bundle with a subdirectory.
+fn write_named_skill(home: &std::path::Path, name: &str) {
+    let skill_dir = home.join(".claude").join("skills").join(name);
+    std::fs::create_dir_all(skill_dir.join("references")).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        format!(
+            "---\nname: {name}\ndescription: Session auth for PHP + HTMX. Use for login, logout, CSRF.\n---\n\n# {name}\n\nSee references/csrf-pattern.md for the token helper.\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        skill_dir.join("references").join("csrf-pattern.md"),
+        "# CSRF token helper\n\nPer-session token in a hidden field.\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn skill_add_resolves_name_from_skill_root() {
+    let mut server = mockito::Server::new();
+    let ingest = server
+        .mock("POST", "/v1/skills/ingest")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::PartialJson(json!({"name": "php-htmx-auth"})),
+            Matcher::Regex(r#""relative_path":"SKILL.md""#.to_string()),
+            Matcher::Regex(r#""relative_path":"references/csrf-pattern.md""#.to_string()),
+        ]))
+        .with_status(201)
+        .with_body(
+            r#"{"skill_id":11,"version":"1.0","bundle_hash":"abc","reused":false,
+               "parent":{"owner_schema":null,"skill_id":null,"note":null},
+               "materiality":{"verdict":"material","reasons":["no_parent"]},
+               "register":{"skill_id":11,"files_linked":2},
+               "ingest":{"created":{"subjects":1}}}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    let home = tempfile::tempdir().expect("temp home");
+    write_named_skill(home.path(), "php-htmx-auth");
+
+    malu(&config_dir)
+        .env("HOME", home.path())
+        .args(["skill", "add", "php-htmx-auth"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Using"))
+        .stdout(predicate::str::contains(
+            "Pushed skill php-htmx-auth as skill 11 version 1.0 (2 files)",
+        ));
+
+    ingest.assert();
+}
+
+#[test]
+fn skill_add_accepts_explicit_path() {
+    let mut server = mockito::Server::new();
+    let ingest = server
+        .mock("POST", "/v1/skills/ingest")
+        .with_status(201)
+        .with_body(
+            r#"{"skill_id":6,"version":"1.0","reused":false,
+               "parent":{"owner_schema":null,"skill_id":null,"note":null},
+               "materiality":{"verdict":"material"},
+               "register":{"skill_id":6,"files_linked":2}}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+    let skill_dir = write_skill_fixture(config_dir.path());
+
+    malu(&config_dir)
+        .args(["skill", "add", skill_dir.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Pushed skill pdf-processing as skill 6 version 1.0 (2 files)",
+        ));
+
+    ingest.assert();
+}
+
+#[test]
+fn skills_alias_add_reports_unknown_name() {
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, "http://127.0.0.1:1");
+    set_file_token(&config_dir);
+
+    // Empty HOME so name resolution finds nothing; `skills` exercises the alias.
+    let home = tempfile::tempdir().expect("temp home");
+
+    malu(&config_dir)
+        .env("HOME", home.path())
+        .args(["skills", "add", "does-not-exist"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "no skill named 'does-not-exist' found",
+        ));
+}
+
 #[test]
 fn skill_list_uses_tag_search_params() {
     let mut server = mockito::Server::new();
