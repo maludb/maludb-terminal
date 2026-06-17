@@ -102,24 +102,63 @@ included in the synced settings blob.
 
 ## Install
 
-From this repository:
+Prebuilt binaries are published for each release, so installing on a new
+machine needs neither Rust nor a compile step.
+
+### One-line install (macOS / Linux)
 
 ```bash
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/maludb/maludb-terminal/main/install.sh | sh
 ```
 
-The CLI currently targets macOS and Ubuntu Linux, with Windows kept in the code
-path through `directories` and platform keyring support.
+Installs the latest release to `~/.local/bin/maludb`. Pin a version or change the
+location:
 
-On a new Ubuntu server, start with the Ubuntu runbook:
+```bash
+curl -fsSL https://raw.githubusercontent.com/maludb/maludb-terminal/main/install.sh \
+  | sh -s -- --version v0.1.0 --bin-dir /usr/local/bin
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/maludb/maludb-terminal/main/install.ps1 | iex
+```
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install maludb/tap/maludb
+```
+
+### cargo-binstall
+
+If you already have [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall),
+it pulls the same prebuilt binary:
+
+```bash
+cargo binstall maludb
+```
+
+Supported targets: `x86_64`/`aarch64` Linux (glibc), `x86_64`/`aarch64` macOS,
+and `x86_64` Windows. Each release also ships `.tar.gz`/`.zip` archives plus
+`.sha256` checksums on the
+[Releases page](https://github.com/maludb/maludb-terminal/releases) for manual
+installs.
+
+### Build from source
+
+Requires the Rust toolchain. On Linux, also install the build dependencies
+listed in [`docs/ubuntu.md`](docs/ubuntu.md) (`pkg-config`, a C compiler).
 
 ```bash
 git clone https://github.com/maludb/maludb-terminal.git
 cd maludb-terminal
+cargo install --path .
 ```
 
-Then follow [`docs/ubuntu.md`](docs/ubuntu.md) to install prerequisites, build,
-package, install, and run smoke tests.
+The Ubuntu runbook ([`docs/ubuntu.md`](docs/ubuntu.md)) also covers building a
+release bundle and running smoke tests from source.
 
 ## Local Development
 
@@ -129,13 +168,43 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-## Release Bundles
+## Releases
 
-Build a Unix release bundle for the current host or an installed Rust target:
+Pushing a `vX.Y.Z` tag triggers
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which builds
+each target on a native runner, packages it, and publishes the archives and
+checksums to a GitHub Release. To cut a release:
 
 ```bash
-scripts/package-release.sh --target x86_64-unknown-linux-gnu
+# bump version in Cargo.toml first, commit, then:
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+You can also build a bundle locally for the current host or an installed target:
+
+```bash
+scripts/package-release.sh --target x86_64-unknown-linux-gnu   # macOS / Linux
+./scripts/package-release.ps1 -Target x86_64-pc-windows-msvc   # Windows (PowerShell)
 ```
 
 Ubuntu-specific build, install, and smoke-test notes are in
 [`docs/ubuntu.md`](docs/ubuntu.md).
+
+### Homebrew tap (one-time setup)
+
+The release workflow keeps a Homebrew formula up to date when a tap is wired up:
+
+1. Create a public repo `maludb/homebrew-tap`.
+2. Create a Personal Access Token with `contents: write` on that repo and add it
+   to this repo's Actions secrets as `HOMEBREW_TAP_TOKEN`.
+
+On the next release the `homebrew` job regenerates `Formula/maludb.rb` in the tap
+(via [`scripts/update-homebrew-formula.sh`](scripts/update-homebrew-formula.sh)),
+enabling `brew install maludb/tap/maludb`. Without the secret, the job logs a
+notice and skips — the rest of the release still publishes.
+
+> **License note:** the repository has no `LICENSE` file yet. Publishing binaries
+> publicly is clearer with an explicit license, and `brew audit` expects one.
+> Add a `LICENSE` (e.g. MIT or Apache-2.0) and the packaging scripts will include
+> it in every bundle automatically.

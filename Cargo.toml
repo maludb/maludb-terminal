@@ -4,6 +4,16 @@ version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/maludb/maludb-terminal"
 
+# `cargo binstall maludb` downloads the prebuilt release artifacts produced by
+# .github/workflows/release.yml instead of compiling from source.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/maludb-{ version }-{ target }{ archive-suffix }"
+bin-dir = "maludb-{ version }-{ target }/bin/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [dependencies]
 anyhow = "1.0.102"
 base64 = "0.22.1"
