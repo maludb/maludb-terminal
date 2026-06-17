@@ -315,6 +315,26 @@ fn tools() -> Vec<Tool> {
             },
         },
         Tool {
+            name: "get_skill",
+            description: "Download a stored skill and install it into the skills folder (~/.claude/skills/<name> by default) so it is ready to use.",
+            input_schema: schema(
+                json!({
+                    "skill": p_str("Skill id, or a skill name (resolves to its newest enabled version)."),
+                    "dest": p_str("Destination directory (default: ~/.claude/skills/<name>)."),
+                    "force": p_bool("Overwrite an existing destination directory."),
+                }),
+                &["skill"],
+            ),
+            build_argv: |args| {
+                let mut argv = vec!["get".to_string(), "skill".to_string(), "--json".to_string()];
+                push_opt(&mut argv, args, "dest", "--dest");
+                push_flag(&mut argv, args, "force", "--force");
+                argv.push("--".to_string());
+                argv.push(req_str(args, "skill")?);
+                Ok(argv)
+            },
+        },
+        Tool {
             name: "sync_push",
             description: "Push portable CLI settings (profiles, subjects, hints) to MaluDB.",
             input_schema: no_args(),
@@ -403,6 +423,41 @@ fn tools() -> Vec<Tool> {
                 push_opt(&mut argv, args, "query", "--query");
                 push_num(&mut argv, args, "limit", "--limit");
                 push_opt(&mut argv, args, "with", "--with");
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "get_note",
+            description: "Retrieve notes by the subjects/verbs of their extracted edges, or by free text. Provide `query` or at least one of subject_like/verb_like/action.",
+            input_schema: schema(
+                json!({
+                    "query": p_str("Free text, e.g. \"Install Ubuntu\" (parsed server-side)."),
+                    "subject_like": p_str_array("Patterns matched anywhere in a subject name or alias."),
+                    "verb_like": p_str("Fuzzy verb match (\"installation\" finds the verb \"install\")."),
+                    "action": p_str("Exact verb (canonical name or alias, case-insensitive)."),
+                    "limit": p_int("Maximum number of results."),
+                    "offset": p_int("Result offset for paging."),
+                    "all_sources": p_bool("Search every stored document, not just notes."),
+                }),
+                &[],
+            ),
+            build_argv: |args| {
+                let mut argv = vec!["get".to_string(), "note".to_string(), "--json".to_string()];
+                if let Some(values) = args.get("subject_like").and_then(Value::as_array) {
+                    for value in values.iter().filter_map(Value::as_str) {
+                        argv.push("--subject-like".to_string());
+                        argv.push(value.to_string());
+                    }
+                }
+                push_opt(&mut argv, args, "verb_like", "--verb-like");
+                push_opt(&mut argv, args, "action", "--action");
+                push_num(&mut argv, args, "limit", "--limit");
+                push_num(&mut argv, args, "offset", "--offset");
+                push_flag(&mut argv, args, "all_sources", "--all-sources");
+                if let Some(query) = args.get("query").and_then(Value::as_str) {
+                    argv.push("--".to_string());
+                    argv.push(query.to_string());
+                }
                 Ok(argv)
             },
         },
@@ -573,6 +628,10 @@ fn p_int(description: &str) -> Value {
 
 fn p_bool(description: &str) -> Value {
     json!({ "type": "boolean", "description": description })
+}
+
+fn p_str_array(description: &str) -> Value {
+    json!({ "type": "array", "items": { "type": "string" }, "description": description })
 }
 
 fn req_str(args: &Value, key: &str) -> Result<String> {

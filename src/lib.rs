@@ -191,6 +191,19 @@ enum GetCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Download a stored skill into your skills folder (~/.claude/skills/<name>)
+    Skill {
+        /// Skill id, or a skill name (resolves to its newest enabled version)
+        skill: String,
+        /// Destination directory (default: ~/.claude/skills/<name>)
+        #[arg(long)]
+        dest: Option<PathBuf>,
+        /// Overwrite an existing destination directory
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -715,6 +728,12 @@ fn handle_get(paths: &Paths, command: GetCommand) -> Result<()> {
             print_notes(&body);
             Ok(())
         }
+        GetCommand::Skill {
+            skill,
+            dest,
+            force,
+            json,
+        } => skills::get_skill(&api, &skill, dest, force, json),
     }
 }
 

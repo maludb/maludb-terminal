@@ -143,7 +143,7 @@ pub(crate) fn handle_skill(paths: &Paths, command: SkillCommand) -> Result<()> {
             dest,
             force,
             json,
-        } => pull(&api, &skill, dest, force, json),
+        } => pull(&api, &skill, dest, force, json, None),
     }
 }
 
@@ -625,12 +625,30 @@ fn resolve_skill_id(api: &ApiClient, skill: &str) -> Result<i64> {
     best.ok_or_else(|| anyhow!("no enabled skill named {skill:?} found"))
 }
 
+/// The canonical per-user skills folder, `~/.claude/skills`.
+fn user_skills_root() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|base| base.home_dir().join(".claude").join("skills"))
+}
+
+/// `maludb get skill`: reconstruct a stored skill into the user's skills folder
+/// (`~/.claude/skills/<name>`) by default, so it is ready for Claude/Codex to use.
+pub(crate) fn get_skill(
+    api: &ApiClient,
+    skill: &str,
+    dest: Option<PathBuf>,
+    force: bool,
+    json: bool,
+) -> Result<()> {
+    pull(api, skill, dest, force, json, user_skills_root())
+}
+
 fn pull(
     api: &ApiClient,
     skill: &str,
     dest: Option<PathBuf>,
     force: bool,
     json: bool,
+    default_base: Option<PathBuf>,
 ) -> Result<()> {
     let skill_id = resolve_skill_id(api, skill)?;
     let body = api.get_json(&format!("/v1/skills/{skill_id}/bundle"))?;
@@ -653,7 +671,10 @@ fn pull(
         bail!("skill {skill_id} has no files to pull");
     }
 
-    let dest = dest.unwrap_or_else(|| PathBuf::from(&name));
+    let dest = dest.unwrap_or_else(|| match &default_base {
+        Some(base) => base.join(&name),
+        None => PathBuf::from(&name),
+    });
     if dest.exists()
         && fs::read_dir(&dest)
             .map(|mut d| d.next().is_some())

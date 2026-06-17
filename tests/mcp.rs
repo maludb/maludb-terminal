@@ -80,6 +80,8 @@ fn initialize_and_tools_list() {
         "note",
         "doc_push",
         "get_config",
+        "get_note",
+        "get_skill",
         "subjects_list",
         "smoke_full",
     ] {
