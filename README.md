@@ -3,6 +3,74 @@
 `maludb` is a command-first Rust terminal CLI for sending notes, documents, and smoke-test
 workflows to the MaluDB API.
 
+## Getting Started
+
+New to `maludb`? This is the quickest path from nothing to your first note.
+
+### 1. Install and verify
+
+macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maludb/maludb-terminal/main/install.sh | sh
+```
+
+This installs `maludb` to `~/.local/bin`. Verify it runs:
+
+```bash
+maludb --help
+```
+
+If you see `command not found`, `~/.local/bin` is not on your `PATH`. Add it,
+then open a new terminal:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # or ~/.zshrc
+```
+
+Windows, Homebrew, `cargo binstall`, and build-from-source are covered under
+[Install](#install).
+
+### 2. Get an API token
+
+Minting a token requires your MaluDB Postgres **database name**, **user name**,
+and **password**. Request one from the API with `curl`:
+
+```bash
+curl -X POST https://api.maludb.org/v1/tokens \
+  -H 'Content-Type: application/json' \
+  -d '{"pg_dbname":"<database name>","pg_user":"<user name>","pg_password":"<user password>"}'
+```
+
+Replace `https://api.maludb.org` with your own API server if you run one. The
+response contains your token in the `token` field; it starts with `malu_`. Copy
+it for the next step.
+
+### 3. Point maludb at the API and save the token
+
+```bash
+maludb set-api https://api.maludb.org      # your API server
+maludb set-token malu_...                   # the token from step 2
+```
+
+On a headless server with no system keyring, store it in a file instead:
+
+```bash
+maludb set-token malu_... --store file
+```
+
+> Tip: once `maludb` is installed, steps 2 and 3 can be done in one command —
+> `maludb token mint --pg-dbname <database name> --pg-user <user name> --pg-password <user password>`
+> makes the same request and saves the token for you.
+
+### 4. Send your first note
+
+```bash
+maludb note "My first MaluDB note"
+```
+
+Run `maludb smoke full` at any time to exercise the whole pipeline end to end.
+
 ## Current Slice
 
 Implemented commands:
@@ -148,8 +216,9 @@ machine needs neither Rust nor a compile step.
 curl -fsSL https://raw.githubusercontent.com/maludb/maludb-terminal/main/install.sh | sh
 ```
 
-Installs the latest release to `~/.local/bin/maludb`. Pin a version or change the
-location:
+Installs the latest release to `~/.local/bin/maludb` (see
+[Getting Started](#getting-started) if it is not found on your `PATH`). Pin a
+version or change the location:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/maludb/maludb-terminal/main/install.sh \
