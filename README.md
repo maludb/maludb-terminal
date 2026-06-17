@@ -1,7 +1,6 @@
 # maludb-terminal
 
-`maludb` is a command-first Rust terminal CLI for sending notes, documents, and smoke-test
-workflows to the MaluDB API.
+This application maludb-terminal `maludb` is a command-first terminal CLI for interfacing with the MaluDb memory database. It also serves as an MCP server for your Claude Code, Codex, and your MCP enabled agents to work with MaluDb. This application accesses the memory database using a MaluDb API server of your choice which you must configure after installation.
 
 ## Getting Started
 
