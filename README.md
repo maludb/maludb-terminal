@@ -108,6 +108,11 @@ maludb get subjects --query FastAPI --limit 5 --json
 maludb get projects --query "maludb api"
 maludb get documents --with attributes
 
+maludb get note --subject-like ubuntu --verb-like installation --limit 20
+maludb get note --subject-like ubuntu --action install        # exact verb (or alias)
+maludb get note "Install Ubuntu"                              # free text, parsed server-side
+maludb get note --subject-like ubuntu --all-sources           # widen beyond notes
+
 maludb llm catalog                     # models the server offers, per task
 maludb llm providers                   # which providers you have a key stored for
 maludb llm set-key openai              # key read from a hidden prompt (or stdin)

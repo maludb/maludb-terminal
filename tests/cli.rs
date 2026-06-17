@@ -316,6 +316,8 @@ fn note_posts_contextualized_text_to_memory_ingest() {
             Matcher::Regex(r#"This is about API smoke testing"#.to_string()),
             Matcher::Regex(r#"Context:\\n- User: Craig"#.to_string()),
             Matcher::Regex(r#"Note:\\nStarting to debug the maludb api"#.to_string()),
+            Matcher::Regex(r#""source_type":"note""#.to_string()),
+            Matcher::Regex(r#""title":"Starting to debug the maludb api""#.to_string()),
         ]))
         // No model override set: the field is omitted so the server resolves
         // the user's `maludb llm use` choice.
@@ -1707,4 +1709,130 @@ fn base64_for_test(content: &[u8]) -> String {
     child.stdin.as_mut().unwrap().write_all(content).unwrap();
     let out = child.wait_with_output().unwrap();
     String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn get_note_queries_memory_notes_with_structured_flags() {
+    let mut server = mockito::Server::new();
+    let notes = server
+        .mock("GET", "/v1/memory/notes")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("subject_like".into(), "ubuntu".into()),
+            Matcher::UrlEncoded("verb_like".into(), "installation".into()),
+            Matcher::UrlEncoded("limit".into(), "20".into()),
+        ]))
+        .with_status(200)
+        .with_body(
+            r#"{"query":{"q":null,"parser":"structured","verb":"installation","subject_like":["ubuntu"]},
+               "count":1,
+               "notes":[{"id":12,"title":"Install Ubuntu 24.04 Server","source_type":"note",
+                         "snippet":"Install Ubuntu 24.04 Server in the Chicago Datacenter on June 11, 2026.",
+                         "created_at":"2026-06-11T10:00:00+00:00","match_count":1,
+                         "matched_edges":[{"statement_id":5,"subject_name":"document:12",
+                                           "verb_name":"install","object_name":"Ubuntu 24.04 Server",
+                                           "match_via":"statement_endpoint","matched_endpoint":"object"}]}]}"#,
+        )
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args([
+            "get",
+            "note",
+            "--subject-like",
+            "ubuntu",
+            "--verb-like",
+            "installation",
+            "--limit",
+            "20",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "12 Install Ubuntu 24.04 Server (note, 1 edge)",
+        ))
+        .stdout(predicate::str::contains(
+            "document:12 --install--> Ubuntu 24.04 Server [statement_endpoint]",
+        ))
+        .stdout(predicate::str::contains("Chicago Datacenter"));
+
+    notes.assert();
+}
+
+#[test]
+fn get_note_free_text_sends_q_param() {
+    let mut server = mockito::Server::new();
+    let notes = server
+        .mock("GET", "/v1/memory/notes")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_query(Matcher::UrlEncoded("q".into(), "Install Ubuntu".into()))
+        .with_status(200)
+        .with_body(r#"{"query":{"q":"Install Ubuntu","parser":"deterministic","verb":"install","subject_like":["ubuntu"]},"count":0,"notes":[]}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["get", "note", "Install Ubuntu"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No notes returned"));
+
+    notes.assert();
+}
+
+#[test]
+fn get_note_action_and_all_sources_send_exact_params_with_json_output() {
+    let mut server = mockito::Server::new();
+    let notes = server
+        .mock("GET", "/v1/memory/notes")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .match_query(Matcher::AllOf(vec![
+            Matcher::UrlEncoded("subject_like".into(), "ubuntu".into()),
+            Matcher::UrlEncoded("action".into(), "install".into()),
+            Matcher::UrlEncoded("all_sources".into(), "true".into()),
+        ]))
+        .with_status(200)
+        .with_body(r#"{"query":{"q":null,"parser":"structured","verb":"install","subject_like":["ubuntu"]},"count":0,"notes":[]}"#)
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args([
+            "get",
+            "note",
+            "--subject-like",
+            "ubuntu",
+            "--action",
+            "install",
+            "--all-sources",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""parser":"structured""#));
+
+    notes.assert();
+}
+
+#[test]
+fn get_note_without_criteria_fails() {
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    create_profile(&config_dir, "http://127.0.0.1:9");
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args(["get", "note"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--subject-like"));
 }
