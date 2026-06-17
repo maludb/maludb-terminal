@@ -1,7 +1,21 @@
 # Ubuntu Linux Build And Install
 
-This runbook covers a fresh Ubuntu server install for `maludb`, including source
-checkout, verification, packaging, local installation, and smoke testing.
+For most installs you do **not** need to build from source. The fastest path on
+a fresh Ubuntu machine is the prebuilt-binary installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maludb/maludb-terminal/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+maludb --help
+```
+
+This downloads the release archive for your architecture
+(`x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`), verifies its
+checksum, and installs `maludb` to `~/.local/bin`. No Rust toolchain or compile
+step is required. Skip ahead to [Configure Hosted API Access](#configure-hosted-api-access).
+
+The rest of this runbook covers building from source, which you only need when
+hacking on `maludb` itself or producing release artifacts.
 
 The Linux release target is:
 
@@ -66,7 +80,7 @@ Create the Linux tarball and verify its checksum:
 
 ```bash
 scripts/package-release.sh --target x86_64-unknown-linux-gnu
-(cd dist && sha256sum -c maludb-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256)
+(cd dist && sha256sum -c maludb-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256)
 ```
 
 The bundle contains:
@@ -83,8 +97,8 @@ Install for the current user:
 
 ```bash
 tmpdir="$(mktemp -d)"
-tar -xzf dist/maludb-0.1.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
-PREFIX="$HOME/.local" "$tmpdir/maludb-0.1.0-x86_64-unknown-linux-gnu/install.sh"
+tar -xzf dist/maludb-0.2.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
+PREFIX="$HOME/.local" "$tmpdir/maludb-0.2.0-x86_64-unknown-linux-gnu/install.sh"
 export PATH="$HOME/.local/bin:$PATH"
 maludb --help
 ```
@@ -100,8 +114,8 @@ Install system-wide instead:
 
 ```bash
 tmpdir="$(mktemp -d)"
-tar -xzf dist/maludb-0.1.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
-cd "$tmpdir/maludb-0.1.0-x86_64-unknown-linux-gnu"
+tar -xzf dist/maludb-0.2.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
+cd "$tmpdir/maludb-0.2.0-x86_64-unknown-linux-gnu"
 sudo ./install.sh
 maludb --help
 ```

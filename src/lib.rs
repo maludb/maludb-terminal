@@ -13,6 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 mod llm;
+mod mcp;
 mod skills;
 use llm::LlmCommand;
 use skills::SkillCommand;
@@ -99,6 +100,8 @@ enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+    /// Run as a local MCP server over stdio (for Claude Code, Codex, etc.)
+    Mcp,
 }
 
 #[derive(Debug, Subcommand)]
@@ -390,6 +393,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
             generate(shell, &mut command, "maludb", &mut io::stdout());
             Ok(())
         }
+        Commands::Mcp => mcp::serve(),
     }
 }
 
