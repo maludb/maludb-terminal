@@ -113,6 +113,9 @@ maludb get note --subject-like ubuntu --action install        # exact verb (or a
 maludb get note "Install Ubuntu"                              # free text, parsed server-side
 maludb get note --subject-like ubuntu --all-sources           # widen beyond notes
 
+maludb get skill pdf-processing                              # install into ~/.claude/skills/<name>
+maludb get skill pdf-processing --dest ./skills/ --force     # ...or a specific folder
+
 maludb llm catalog                     # models the server offers, per task
 maludb llm providers                   # which providers you have a key stored for
 maludb llm set-key openai              # key read from a hidden prompt (or stdin)
@@ -199,9 +202,10 @@ args = ["mcp"]
 The exposed tools cover notes and uploads (`note`, `doc_push`, `chat_push`),
 context (`subjects_add`/`hints_add`, `subjects_list`/`hints_list`,
 `profile_list`/`profile_show`), reads (`get_config`, `get_subjects`,
-`get_projects`, `get_documents`, `llm_catalog`, `llm_models`, `skill_list`),
-skills (`skill_add`, `skill_pull`), sync (`sync_push`/`pull`/`status`/`diff`),
-and smoke tests (`smoke_health`/`config`/`search`/`full`).
+`get_projects`, `get_documents`, `get_note`, `llm_catalog`, `llm_models`,
+`skill_list`), skills (`skill_add`, `skill_pull`, `get_skill`), sync
+(`sync_push`/`pull`/`status`/`diff`), and smoke tests
+(`smoke_health`/`config`/`search`/`full`).
 
 For safety the server **does not** expose credential or secret mutation
 (`set-token`, `token mint`, `llm set-key`, profile/token deletion). Run those by

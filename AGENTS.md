@@ -114,6 +114,7 @@ maludb get projects
 maludb get documents
 maludb get note --subject-like <pattern> [--verb-like <fuzzy> | --action <exact>] [--all-sources]
 maludb get note "<free text>"
+maludb get skill <name-or-id> [--dest <dir>] [--force]   # install into ~/.claude/skills/<name>
 
 maludb llm catalog
 maludb llm providers

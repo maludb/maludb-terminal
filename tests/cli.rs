@@ -1836,3 +1836,76 @@ fn get_note_without_criteria_fails() {
         .failure()
         .stderr(predicate::str::contains("--subject-like"));
 }
+
+fn skill_bundle_body(content_base64: &str) -> String {
+    format!(
+        r#"{{"skill":{{"name":"my-skill","version":"1.0"}},
+            "files":[{{"relative_path":"SKILL.md","content_base64":"{content_base64}","is_executable":false}}]}}"#
+    )
+}
+
+#[test]
+fn get_skill_installs_bundle_into_user_skills_folder_by_default() {
+    let mut server = mockito::Server::new();
+    let content = base64_for_test(b"# My Skill\n");
+    let bundle = server
+        .mock("GET", "/v1/skills/42/bundle")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .with_status(200)
+        .with_body(skill_bundle_body(&content))
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    let home = tempfile::tempdir().expect("temp home");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    // A numeric id skips the name->id lookup and goes straight to the bundle.
+    malu(&config_dir)
+        .env("HOME", home.path())
+        .args(["get", "skill", "42", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""name":"my-skill""#));
+
+    bundle.assert();
+    let installed = home.path().join(".claude/skills/my-skill/SKILL.md");
+    assert!(
+        installed.is_file(),
+        "expected skill installed at {}",
+        installed.display()
+    );
+    assert_eq!(std::fs::read_to_string(&installed).unwrap(), "# My Skill\n");
+}
+
+#[test]
+fn get_skill_honors_explicit_dest() {
+    let mut server = mockito::Server::new();
+    let content = base64_for_test(b"# My Skill\n");
+    let bundle = server
+        .mock("GET", "/v1/skills/42/bundle")
+        .match_header("authorization", "Bearer malu_testtoken")
+        .with_status(200)
+        .with_body(skill_bundle_body(&content))
+        .create();
+
+    let config_dir = tempfile::tempdir().expect("temp config dir");
+    let dest = tempfile::tempdir().expect("temp dest");
+    create_profile(&config_dir, &server.url());
+    set_file_token(&config_dir);
+
+    malu(&config_dir)
+        .args([
+            "get",
+            "skill",
+            "42",
+            "--dest",
+            dest.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pulled skill my-skill"));
+
+    bundle.assert();
+    assert!(dest.path().join("SKILL.md").is_file());
+}
