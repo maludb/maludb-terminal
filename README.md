@@ -77,6 +77,8 @@ maludb sync status
 maludb sync diff
 
 maludb completions bash > maludb.bash
+
+maludb mcp                             # run as a local MCP server over stdio
 ```
 
 Notes use `POST /v1/memory/ingest` with a context preamble and active profile
@@ -99,6 +101,41 @@ use strict permissions on Unix.
 Sync v1 stores portable CLI settings in an internal MaluDB note named
 `malu-cli-settings` with type `malu_cli_settings`. Raw API tokens are never
 included in the synced settings blob.
+
+## MCP Server
+
+`maludb mcp` runs a local [Model Context Protocol](https://modelcontextprotocol.io)
+server over stdio, so agents like Claude Code and Codex can call a curated set of
+maludb commands as tools. Each tool maps to a normal CLI invocation against your
+active profile; configure the profile, token, and LLM model first, then point a
+client at `maludb mcp`.
+
+Register it with **Claude Code**:
+
+```bash
+claude mcp add maludb -- maludb mcp
+```
+
+Register it with **Codex** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.maludb]
+command = "maludb"
+args = ["mcp"]
+```
+
+The exposed tools cover notes and uploads (`note`, `doc_push`, `chat_push`),
+context (`subjects_add`/`hints_add`, `subjects_list`/`hints_list`,
+`profile_list`/`profile_show`), reads (`get_config`, `get_subjects`,
+`get_projects`, `get_documents`, `llm_catalog`, `llm_models`, `skill_list`),
+skills (`skill_add`, `skill_pull`), sync (`sync_push`/`pull`/`status`/`diff`),
+and smoke tests (`smoke_health`/`config`/`search`/`full`).
+
+For safety the server **does not** expose credential or secret mutation
+(`set-token`, `token mint`, `llm set-key`, profile/token deletion). Run those by
+hand once when setting the machine up. Each tool call re-executes the `maludb`
+binary as a child process and returns its captured output, so a failing command
+can never corrupt the protocol stream.
 
 ## Install
 
