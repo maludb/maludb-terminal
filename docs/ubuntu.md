@@ -80,7 +80,7 @@ Create the Linux tarball and verify its checksum:
 
 ```bash
 scripts/package-release.sh --target x86_64-unknown-linux-gnu
-(cd dist && sha256sum -c maludb-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256)
+(cd dist && sha256sum -c maludb-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256)
 ```
 
 The bundle contains:
@@ -97,8 +97,8 @@ Install for the current user:
 
 ```bash
 tmpdir="$(mktemp -d)"
-tar -xzf dist/maludb-0.1.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
-PREFIX="$HOME/.local" "$tmpdir/maludb-0.1.0-x86_64-unknown-linux-gnu/install.sh"
+tar -xzf dist/maludb-0.2.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
+PREFIX="$HOME/.local" "$tmpdir/maludb-0.2.0-x86_64-unknown-linux-gnu/install.sh"
 export PATH="$HOME/.local/bin:$PATH"
 maludb --help
 ```
@@ -114,8 +114,8 @@ Install system-wide instead:
 
 ```bash
 tmpdir="$(mktemp -d)"
-tar -xzf dist/maludb-0.1.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
-cd "$tmpdir/maludb-0.1.0-x86_64-unknown-linux-gnu"
+tar -xzf dist/maludb-0.2.0-x86_64-unknown-linux-gnu.tar.gz -C "$tmpdir"
+cd "$tmpdir/maludb-0.2.0-x86_64-unknown-linux-gnu"
 sudo ./install.sh
 maludb --help
 ```

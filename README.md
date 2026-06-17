@@ -153,7 +153,7 @@ location:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/maludb/maludb-terminal/main/install.sh \
-  | sh -s -- --version v0.1.0 --bin-dir /usr/local/bin
+  | sh -s -- --version v0.2.0 --bin-dir /usr/local/bin
 ```
 
 ### Windows (PowerShell)
