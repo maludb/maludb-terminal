@@ -204,7 +204,7 @@ On the next release the `homebrew` job regenerates `Formula/maludb.rb` in the ta
 enabling `brew install maludb/tap/maludb`. Without the secret, the job logs a
 notice and skips — the rest of the release still publishes.
 
-> **License note:** the repository has no `LICENSE` file yet. Publishing binaries
-> publicly is clearer with an explicit license, and `brew audit` expects one.
-> Add a `LICENSE` (e.g. MIT or Apache-2.0) and the packaging scripts will include
-> it in every bundle automatically.
+## License
+
+Released under the [MIT License](LICENSE). The packaging scripts bundle the
+`LICENSE` file into every release archive automatically.

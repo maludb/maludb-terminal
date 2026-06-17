@@ -69,6 +69,7 @@ class Maludb < Formula
   desc "Command-first CLI for sending notes, documents, and smoke tests to MaluDB"
   homepage "https://github.com/$repo"
   version "$version"
+  license "MIT"
 
   on_macos do
     on_arm do
