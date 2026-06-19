@@ -62,7 +62,43 @@ maludb set-token malu_... --store file
 > `maludb token mint --pg-dbname <database name> --pg-user <user name> --pg-password <user password>`
 > makes the same request and saves the token for you.
 
-### 4. Send your first note
+### 4. Configure the extraction LLM
+
+`maludb note` extracts a knowledge graph from your text with an LLM, so the
+server needs a **provider API key** and a **chosen extraction model** before the
+first note will work. Skip this step and the note fails with:
+
+```
+API error model_not_configured: No prompt configured for model "..." and no
+model config for namespace "default".
+```
+
+First see what models the server offers and which providers still need a key —
+each row ends in `key:set` or `key:missing`:
+
+```bash
+maludb llm catalog
+```
+
+Store your API key for the provider you want to use. The key is read from a
+hidden prompt (or piped on stdin) and sent straight to the server — it is never
+passed on the command line or written to a local file:
+
+```bash
+maludb llm set-key openai      # or anthropic, google, xai, deepseek, ollama
+```
+
+Then choose the extraction model by its catalog name:
+
+```bash
+maludb llm use gpt-4o          # default task is extraction
+```
+
+Confirm with `maludb llm models` — the chosen model shows `(chosen)`. (Pushing
+documents or running search also needs an embedding model:
+`maludb llm use text-embedding-3-small --task embed`.)
+
+### 5. Send your first note
 
 ```bash
 maludb note "My first MaluDB note"
