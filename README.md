@@ -262,13 +262,61 @@ installs.
 
 ### Build from source
 
-Requires the Rust toolchain. On Linux, also install the build dependencies
-listed in [`docs/ubuntu.md`](docs/ubuntu.md) (`pkg-config`, a C compiler).
+Building `maludb` yourself (instead of installing a prebuilt binary) needs three
+things: a recent Rust toolchain, a C compiler/linker, and the system libraries
+the keyring credential backend links against.
+
+**1. Rust toolchain (1.85 or newer).** The crate uses the 2024 edition, which
+requires Rust **1.85+**. Install or update with [rustup](https://rustup.rs):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # install
+rustup update                                                    # or update an existing toolchain
+rustc --version                                                  # confirm >= 1.85.0
+```
+
+**2. C toolchain and system libraries.**
+
+- **Debian / Ubuntu:**
+
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y build-essential pkg-config libdbus-1-dev git
+  ```
+
+- **Fedora / RHEL:**
+
+  ```bash
+  sudo dnf install -y gcc pkgconf-pkg-config dbus-devel git
+  ```
+
+- **Other Linux:** install the equivalent of a C compiler, `pkg-config`, and the
+  D-Bus development headers (`libdbus-1-dev`).
+
+- **macOS:** install the Command Line Tools (provides `clang` and the linker):
+
+  ```bash
+  xcode-select --install
+  ```
+
+- **Windows:** install the
+  [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+  ("Desktop development with C++") for the MSVC linker.
+
+`reqwest` is built with Rustls, so OpenSSL development packages are **not**
+required. The `libdbus-1-dev` / `dbus-devel` package backs the Linux keyring
+credential store (`keyring` → `dbus-secret-service`); without it the build fails
+to link. On headless boxes you can avoid the keyring at runtime with file token
+storage (`maludb set-token ... --store file`).
+
+**3. Clone, then build and install.**
 
 ```bash
 git clone https://github.com/maludb/maludb-terminal.git
 cd maludb-terminal
-cargo install --path .
+cargo install --path .          # installs `maludb` into ~/.cargo/bin
+# ...or build without installing:
+cargo build --release           # binary at target/release/maludb
 ```
 
 The Ubuntu runbook ([`docs/ubuntu.md`](docs/ubuntu.md)) also covers building a
@@ -276,7 +324,11 @@ release bundle and running smoke tests from source.
 
 ## Local Development
 
+Needs the same prerequisites as [Build from source](#build-from-source) (Rust
+1.85+, a C toolchain, and the D-Bus dev libraries on Linux). From a clone:
+
 ```bash
+cargo build                                                   # compile
 cargo fmt --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
