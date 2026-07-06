@@ -600,6 +600,208 @@ fn tools() -> Vec<Tool> {
             input_schema: no_args(),
             build_argv: |_| Ok(vec!["smoke".to_string(), "full".to_string()]),
         },
+        // --- knowledge graph (names mirror graphify's MCP tools) ---
+        Tool {
+            name: "query_graph",
+            description: "Ask a question of the tenant knowledge graph: lexical seed matching plus a bounded walk returns the relevant subgraph (nodes and edges). Use this before broad searches when exploring how entities relate.",
+            input_schema: schema(
+                json!({
+                    "question": p_str("The question or topic, e.g. 'mcp serve tools'."),
+                    "namespace": p_str("Optional namespace scope, e.g. an imported repo's namespace."),
+                    "depth": p_int("Walk depth from each seed (default 2, max 6)."),
+                    "max_nodes": p_int("Cap on returned nodes (default 50)."),
+                }),
+                &["question"],
+            ),
+            build_argv: |args| {
+                let mut argv = vec!["graph".to_string(), "query".to_string()];
+                push_opt(&mut argv, args, "namespace", "--namespace");
+                push_num(&mut argv, args, "depth", "--depth");
+                push_num(&mut argv, args, "max_nodes", "--max-nodes");
+                argv.push("--".to_string());
+                argv.push(req_str(args, "question")?);
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "get_neighbors",
+            description: "One-hop neighbors of a graph node, with relationship names and confidence.",
+            input_schema: schema(
+                json!({
+                    "id": p_int("Node object id (e.g. a subject id)."),
+                    "kind": p_str("Node kind (default 'subject')."),
+                    "direction": p_str("'out', 'in', or 'both' (default 'both')."),
+                    "rel": p_str("Optional comma-separated relationship filter."),
+                }),
+                &["id"],
+            ),
+            build_argv: |args| {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .context("missing required integer argument: id")?;
+                let mut argv = vec!["graph".to_string(), "neighbors".to_string(), id.to_string()];
+                push_opt(&mut argv, args, "kind", "--kind");
+                push_opt(&mut argv, args, "direction", "--direction");
+                push_opt(&mut argv, args, "rel", "--rel");
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "graph_walk",
+            description: "Multi-hop breadth-first walk of the knowledge graph from a node.",
+            input_schema: schema(
+                json!({
+                    "id": p_int("Node object id."),
+                    "kind": p_str("Node kind (default 'subject')."),
+                    "max_depth": p_int("Maximum depth (default 4)."),
+                    "direction": p_str("'out', 'in', or 'both' (default 'both')."),
+                    "rel": p_str("Optional comma-separated relationship filter."),
+                }),
+                &["id"],
+            ),
+            build_argv: |args| {
+                let id = args
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .context("missing required integer argument: id")?;
+                let mut argv = vec!["graph".to_string(), "walk".to_string(), id.to_string()];
+                push_opt(&mut argv, args, "kind", "--kind");
+                push_num(&mut argv, args, "max_depth", "--max-depth");
+                push_opt(&mut argv, args, "direction", "--direction");
+                push_opt(&mut argv, args, "rel", "--rel");
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "shortest_path",
+            description: "Paths between two graph nodes, shortest first ('how are A and B connected?').",
+            input_schema: schema(
+                json!({
+                    "source_id": p_int("Source node object id."),
+                    "target_id": p_int("Target node object id."),
+                    "source_kind": p_str("Source kind (default 'subject')."),
+                    "target_kind": p_str("Target kind (default 'subject')."),
+                    "max_depth": p_int("Depth budget (default 6, max 32)."),
+                    "direction": p_str("'out', 'in', or 'both' (default 'both')."),
+                }),
+                &["source_id", "target_id"],
+            ),
+            build_argv: |args| {
+                let source = args
+                    .get("source_id")
+                    .and_then(Value::as_i64)
+                    .context("missing required integer argument: source_id")?;
+                let target = args
+                    .get("target_id")
+                    .and_then(Value::as_i64)
+                    .context("missing required integer argument: target_id")?;
+                let mut argv = vec![
+                    "graph".to_string(),
+                    "path".to_string(),
+                    source.to_string(),
+                    target.to_string(),
+                ];
+                push_opt(&mut argv, args, "source_kind", "--source-kind");
+                push_opt(&mut argv, args, "target_kind", "--target-kind");
+                push_num(&mut argv, args, "max_depth", "--max-depth");
+                push_opt(&mut argv, args, "direction", "--direction");
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "graph_stats",
+            description: "Node/edge totals, per-store counts, and top relationship types for the tenant graph.",
+            input_schema: no_args(),
+            build_argv: |_| Ok(vec!["graph".to_string(), "stats".to_string()]),
+        },
+        Tool {
+            name: "god_nodes",
+            description: "Highest-degree (most connected) nodes in the tenant graph.",
+            input_schema: schema(
+                json!({ "limit": p_int("How many nodes to return (default 10).") }),
+                &[],
+            ),
+            build_argv: |args| {
+                let mut argv = vec!["graph".to_string(), "god-nodes".to_string()];
+                push_num(&mut argv, args, "limit", "--limit");
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "get_communities",
+            description: "Community sets (clusters) in the tenant graph, with member counts.",
+            input_schema: schema(
+                json!({ "namespace": p_str("Optional namespace scope.") }),
+                &[],
+            ),
+            build_argv: |args| {
+                let mut argv = vec!["graph".to_string(), "communities".to_string()];
+                push_opt(&mut argv, args, "namespace", "--namespace");
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "get_community",
+            description: "Members of one graph community, with readable labels.",
+            input_schema: schema(
+                json!({
+                    "community_id": p_int("Community id (from get_communities)."),
+                    "limit": p_int("Maximum members to return (default 200)."),
+                }),
+                &["community_id"],
+            ),
+            build_argv: |args| {
+                let id = args
+                    .get("community_id")
+                    .and_then(Value::as_i64)
+                    .context("missing required integer argument: community_id")?;
+                let mut argv = vec!["graph".to_string(), "members".to_string(), id.to_string()];
+                push_num(&mut argv, args, "limit", "--limit");
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "graph_surprises",
+            description: "Cross-community edges ranked by rarity — unexpected connections between otherwise separate clusters.",
+            input_schema: schema(
+                json!({
+                    "namespace": p_str("Namespace whose communities to analyze."),
+                    "limit": p_int("Maximum edges to return (default 25)."),
+                }),
+                &["namespace"],
+            ),
+            build_argv: |args| {
+                let mut argv = vec![
+                    "graph".to_string(),
+                    "surprises".to_string(),
+                    req_str(args, "namespace")?,
+                ];
+                push_num(&mut argv, args, "limit", "--limit");
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "graph_import",
+            description: "Import a graphify graph.json file into the tenant knowledge graph under a namespace.",
+            input_schema: schema(
+                json!({
+                    "path": p_str("Path to the graph.json file."),
+                    "namespace": p_str("Namespace for the imported graph (e.g. the repo name)."),
+                }),
+                &["path", "namespace"],
+            ),
+            build_argv: |args| {
+                Ok(vec![
+                    "graph".to_string(),
+                    "import".to_string(),
+                    "--namespace".to_string(),
+                    req_str(args, "namespace")?,
+                    "--".to_string(),
+                    req_str(args, "path")?,
+                ])
+            },
+        },
     ]
 }
 
