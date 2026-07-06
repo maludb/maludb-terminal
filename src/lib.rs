@@ -71,6 +71,11 @@ enum Commands {
         #[command(subcommand)]
         command: GraphCommand,
     },
+    /// Explore the relational data model (tables, FKs, dependencies)
+    Db {
+        #[command(subcommand)]
+        command: DbCommand,
+    },
     Note {
         #[arg(long)]
         debug: bool,
@@ -317,6 +322,55 @@ enum GraphCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum DbCommand {
+    /// Columns, primary key, and FKs (in/out) of one relation
+    Schema {
+        relation: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// FK neighbors + code/routines that read or write a relation
+    Related {
+        relation: String,
+        #[arg(long, default_value = "datamodel")]
+        namespace: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The FK path between two relations ("how do I join A to B")
+    JoinPath {
+        from: String,
+        to: String,
+        #[arg(long, default_value = "datamodel")]
+        namespace: String,
+        #[arg(long, default_value_t = 6)]
+        max_depth: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Everything that depends on a relation (views, routines, triggers, code)
+    Impact {
+        relation: String,
+        #[arg(long, default_value = "datamodel")]
+        namespace: String,
+        #[arg(long, default_value_t = 3)]
+        max_depth: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Re-introspect the database into the data-model graph
+    Refresh {
+        #[arg(long, default_value = "datamodel")]
+        namespace: String,
+        /// Comma-separated schema list (default: your tenant schema)
+        #[arg(long)]
+        schemas: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum DocCommand {
     Push { path: PathBuf },
 }
@@ -533,6 +587,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
         Commands::Hints { command } => handle_collection(paths, command, Collection::Hints),
         Commands::Get { command } => handle_get(paths, command),
         Commands::Graph { command } => handle_graph(paths, command),
+        Commands::Db { command } => handle_db(paths, command),
         Commands::Note { text, debug } => handle_note(paths, text, debug),
         Commands::Doc { command } => handle_doc(paths, command),
         Commands::Skill { command } => skills::handle_skill(paths, command),
@@ -1692,6 +1747,226 @@ fn handle_graph(paths: &Paths, command: GraphCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn handle_db(paths: &Paths, command: DbCommand) -> Result<()> {
+    let config = Config::load(paths)?;
+    let (_, profile) = config.active_profile()?;
+    let token = config.required_token(paths, profile)?;
+    let api = ApiClient::new(&profile.api_url, Some(token));
+
+    match command {
+        DbCommand::Schema { relation, json } => {
+            let params = vec![("relation", relation)];
+            let body = api.get_json_query("/v1/datamodel/describe", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            let d = body.get("describe").unwrap_or(&Value::Null);
+            let schema = string_field(d, "schema", "?");
+            let name = string_field(d, "name", "?");
+            let kind = string_field(d, "kind", "relation");
+            println!("{schema}.{name} ({kind})");
+            if let Some(columns) = d.get("columns").and_then(Value::as_array) {
+                for c in columns {
+                    let pk = if c.get("pk").and_then(Value::as_bool).unwrap_or(false) {
+                        " pk"
+                    } else {
+                        ""
+                    };
+                    let nullable = if c.get("nullable").and_then(Value::as_bool).unwrap_or(true) {
+                        ""
+                    } else {
+                        " not null"
+                    };
+                    println!(
+                        "  {} {}{pk}{nullable}",
+                        string_field(c, "name", "?"),
+                        string_field(c, "type", "?")
+                    );
+                }
+            }
+            for (key, arrow) in [("fks_out", "->"), ("fks_in", "<-")] {
+                if let Some(fks) = d.get(key).and_then(Value::as_array) {
+                    for fk in fks {
+                        let other =
+                            string_field(fk, "references", "") + &string_field(fk, "from", "");
+                        println!(
+                            "  fk {arrow} {other} ({})",
+                            string_field(fk, "constraint", "?")
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        DbCommand::Related {
+            relation,
+            namespace,
+            json,
+        } => {
+            let node = resolve_datamodel_node(&api, &namespace, &relation)?;
+            let params = vec![
+                ("kind", "subject".to_string()),
+                ("id", node.to_string()),
+                ("direction", "both".to_string()),
+                (
+                    "rel",
+                    "fk_references,reads,writes,depends_on,triggers_on".to_string(),
+                ),
+            ];
+            let body = api.get_json_query("/v1/graph/neighbors", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "neighbors", |row| {
+                let rel = string_field(row, "rel", "related_to");
+                let label = string_field(row, "label", "(unnamed)");
+                format!("{rel} {label}")
+            });
+            Ok(())
+        }
+        DbCommand::JoinPath {
+            from,
+            to,
+            namespace,
+            max_depth,
+            json,
+        } => {
+            let source = resolve_datamodel_node(&api, &namespace, &from)?;
+            let target = resolve_datamodel_node(&api, &namespace, &to)?;
+            let params = vec![
+                ("source_kind", "subject".to_string()),
+                ("source_id", source.to_string()),
+                ("target_kind", "subject".to_string()),
+                ("target_id", target.to_string()),
+                ("max_depth", max_depth.to_string()),
+                ("direction", "both".to_string()),
+                ("rel", "fk_references".to_string()),
+            ];
+            let body = api.get_json_query("/v1/graph/path", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "paths", |row| {
+                let depth = row.get("depth").and_then(Value::as_i64).unwrap_or(0);
+                let hops = row
+                    .get("path")
+                    .and_then(Value::as_array)
+                    .map(|path| {
+                        path.iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" -> ")
+                    })
+                    .unwrap_or_default();
+                format!("join depth {depth}: {hops}")
+            });
+            Ok(())
+        }
+        DbCommand::Impact {
+            relation,
+            namespace,
+            max_depth,
+            json,
+        } => {
+            let node = resolve_datamodel_node(&api, &namespace, &relation)?;
+            let params = vec![
+                ("kind", "subject".to_string()),
+                ("id", node.to_string()),
+                ("max_depth", max_depth.to_string()),
+                ("direction", "in".to_string()),
+            ];
+            let body = api.get_json_query("/v1/graph/walk", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "walk", |row| {
+                let depth = row.get("depth").and_then(Value::as_i64).unwrap_or(0);
+                let rel = string_field(row, "rel", "related_to");
+                let label = string_field(row, "label", "(unnamed)");
+                format!("d{depth} {rel} {label}")
+            });
+            Ok(())
+        }
+        DbCommand::Refresh {
+            namespace,
+            schemas,
+            json,
+        } => {
+            let mut body = serde_json::json!({ "namespace": namespace });
+            if let Some(schemas) = schemas {
+                let list: Vec<String> = schemas
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                body["schemas"] = serde_json::json!(list);
+            }
+            let response = api.post_value("/v1/datamodel/refresh", &body)?;
+            if json {
+                println!("{}", compact_json(&response));
+                return Ok(());
+            }
+            let report = response.get("report").unwrap_or(&Value::Null);
+            let nodes = report
+                .get("nodes")
+                .and_then(|n| n.get("received"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let edges = report
+                .get("edges")
+                .and_then(|e| e.get("received"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            println!(
+                "Data model refreshed into '{}': {nodes} objects, {edges} relationships",
+                string_field(report, "namespace", "datamodel")
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Resolve a relation name (e.g. "orders" or "dm_a.orders") to its
+/// data-model graph subject id via the lexical query's seed scoring.
+fn resolve_datamodel_node(api: &ApiClient, namespace: &str, relation: &str) -> Result<i64> {
+    let params = vec![
+        ("q", relation.to_string()),
+        ("namespace", namespace.to_string()),
+        ("depth", "1".to_string()),
+        ("max_nodes", "1".to_string()),
+        ("seeds", "10".to_string()),
+    ];
+    let body = api.get_json_query("/v1/graph/query", &params)?;
+    let seeds = body
+        .get("seeds")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let exact = format!("{namespace}/{relation}");
+    let suffix = format!(".{relation}");
+    let mut fallback: Option<i64> = None;
+    for seed in &seeds {
+        let name = string_field(seed, "canonical_name", "");
+        let id = seed.get("subject_id").and_then(Value::as_i64);
+        if name == exact {
+            return id.context("seed missing subject_id");
+        }
+        if name.ends_with(&suffix) && fallback.is_none() {
+            fallback = id;
+        }
+    }
+    fallback.with_context(|| {
+        format!(
+            "relation {relation:?} not found in the '{namespace}' data-model graph \
+             (run `maludb db refresh` first?)"
+        )
+    })
 }
 
 fn print_graph_query(body: &Value) {

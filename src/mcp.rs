@@ -781,6 +781,100 @@ fn tools() -> Vec<Tool> {
                 Ok(argv)
             },
         },
+        // --- relational data model (call these when working with the database) ---
+        Tool {
+            name: "db_schema",
+            description: "Describe a database relation before writing SQL against it: columns with types, primary key, and foreign keys in and out. Call this instead of guessing column names.",
+            input_schema: schema(
+                json!({ "relation": p_str("Relation name, e.g. 'orders' or 'myschema.orders'.") }),
+                &["relation"],
+            ),
+            build_argv: |args| {
+                Ok(vec![
+                    "db".to_string(),
+                    "schema".to_string(),
+                    "--".to_string(),
+                    req_str(args, "relation")?,
+                ])
+            },
+        },
+        Tool {
+            name: "db_related",
+            description: "What connects to a database relation: FK neighbors, views depending on it, routines/code that read or write it.",
+            input_schema: schema(
+                json!({
+                    "relation": p_str("Relation name."),
+                    "namespace": p_str("Data-model namespace (default 'datamodel')."),
+                }),
+                &["relation"],
+            ),
+            build_argv: |args| {
+                let mut argv = vec!["db".to_string(), "related".to_string()];
+                push_opt(&mut argv, args, "namespace", "--namespace");
+                argv.push("--".to_string());
+                argv.push(req_str(args, "relation")?);
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "db_join_path",
+            description: "How to JOIN two tables: the foreign-key path between them, shortest first. Call before writing multi-table SQL when the join route is not obvious.",
+            input_schema: schema(
+                json!({
+                    "from": p_str("Starting relation name."),
+                    "to": p_str("Target relation name."),
+                    "namespace": p_str("Data-model namespace (default 'datamodel')."),
+                    "max_depth": p_int("FK-hop budget (default 6)."),
+                }),
+                &["from", "to"],
+            ),
+            build_argv: |args| {
+                let mut argv = vec!["db".to_string(), "join-path".to_string()];
+                push_opt(&mut argv, args, "namespace", "--namespace");
+                push_num(&mut argv, args, "max_depth", "--max-depth");
+                argv.push("--".to_string());
+                argv.push(req_str(args, "from")?);
+                argv.push(req_str(args, "to")?);
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "db_impact",
+            description: "What would break if a database relation changed: reverse-dependency walk over views, routines, triggers, FKs, and application code that touches it. Call before ALTER/DROP.",
+            input_schema: schema(
+                json!({
+                    "relation": p_str("Relation name."),
+                    "namespace": p_str("Data-model namespace (default 'datamodel')."),
+                    "max_depth": p_int("Walk depth (default 3)."),
+                }),
+                &["relation"],
+            ),
+            build_argv: |args| {
+                let mut argv = vec!["db".to_string(), "impact".to_string()];
+                push_opt(&mut argv, args, "namespace", "--namespace");
+                push_num(&mut argv, args, "max_depth", "--max-depth");
+                argv.push("--".to_string());
+                argv.push(req_str(args, "relation")?);
+                Ok(argv)
+            },
+        },
+        Tool {
+            name: "db_model_refresh",
+            description: "Re-introspect the database into the data-model graph (run after DDL changes so db_* tools see the current schema).",
+            input_schema: schema(
+                json!({
+                    "namespace": p_str("Data-model namespace (default 'datamodel')."),
+                    "schemas": p_str("Optional comma-separated schema list."),
+                }),
+                &[],
+            ),
+            build_argv: |args| {
+                let mut argv = vec!["db".to_string(), "refresh".to_string()];
+                push_opt(&mut argv, args, "namespace", "--namespace");
+                push_opt(&mut argv, args, "schemas", "--schemas");
+                Ok(argv)
+            },
+        },
         Tool {
             name: "graph_import",
             description: "Import a graphify graph.json file into the tenant knowledge graph under a namespace.",
