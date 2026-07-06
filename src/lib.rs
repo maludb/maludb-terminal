@@ -66,6 +66,11 @@ enum Commands {
         #[command(subcommand)]
         command: GetCommand,
     },
+    /// Query and manage the tenant knowledge graph
+    Graph {
+        #[command(subcommand)]
+        command: GraphCommand,
+    },
     Note {
         #[arg(long)]
         debug: bool,
@@ -201,6 +206,111 @@ enum GetCommand {
         /// Overwrite an existing destination directory
         #[arg(long)]
         force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GraphCommand {
+    /// Ask a question of the graph: lexical seeds + bounded walk
+    Query {
+        text: String,
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long, default_value_t = 2)]
+        depth: u32,
+        #[arg(long, default_value_t = 50)]
+        max_nodes: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// One-hop neighbors of a node
+    Neighbors {
+        id: i64,
+        #[arg(long, default_value = "subject")]
+        kind: String,
+        #[arg(long, default_value = "both")]
+        direction: String,
+        /// Comma-separated relationship filter
+        #[arg(long)]
+        rel: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Multi-hop walk from a node
+    Walk {
+        id: i64,
+        #[arg(long, default_value = "subject")]
+        kind: String,
+        #[arg(long, default_value_t = 4)]
+        max_depth: u32,
+        #[arg(long, default_value = "both")]
+        direction: String,
+        /// Comma-separated relationship filter
+        #[arg(long)]
+        rel: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Paths between two nodes, shortest first
+    Path {
+        source_id: i64,
+        target_id: i64,
+        #[arg(long, default_value = "subject")]
+        source_kind: String,
+        #[arg(long, default_value = "subject")]
+        target_kind: String,
+        #[arg(long, default_value_t = 6)]
+        max_depth: u32,
+        #[arg(long, default_value = "both")]
+        direction: String,
+        /// Comma-separated relationship filter
+        #[arg(long)]
+        rel: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Node/edge totals for the tenant graph
+    Stats {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Highest-degree nodes (tenant-wide)
+    GodNodes {
+        #[arg(long, default_value_t = 10)]
+        limit: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cross-community edges, rarest community pair first
+    Surprises {
+        namespace: String,
+        #[arg(long, default_value_t = 25)]
+        limit: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Community sets (optionally scoped to one namespace)
+    Communities {
+        #[arg(long)]
+        namespace: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Members of one community
+    Members {
+        community_id: i64,
+        #[arg(long, default_value_t = 200)]
+        limit: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Import a graphify graph.json into the tenant graph
+    Import {
+        file: PathBuf,
+        #[arg(long)]
+        namespace: String,
         #[arg(long)]
         json: bool,
     },
@@ -422,6 +532,7 @@ fn handle(command: Commands, paths: &Paths) -> Result<()> {
         Commands::Subjects { command } => handle_collection(paths, command, Collection::Subjects),
         Commands::Hints { command } => handle_collection(paths, command, Collection::Hints),
         Commands::Get { command } => handle_get(paths, command),
+        Commands::Graph { command } => handle_graph(paths, command),
         Commands::Note { text, debug } => handle_note(paths, text, debug),
         Commands::Doc { command } => handle_doc(paths, command),
         Commands::Skill { command } => skills::handle_skill(paths, command),
@@ -1280,6 +1391,352 @@ fn list_query(
         params.push(("with", with_));
     }
     params
+}
+
+fn handle_graph(paths: &Paths, command: GraphCommand) -> Result<()> {
+    let config = Config::load(paths)?;
+    let (_, profile) = config.active_profile()?;
+    let token = config.required_token(paths, profile)?;
+    let api = ApiClient::new(&profile.api_url, Some(token));
+
+    match command {
+        GraphCommand::Query {
+            text,
+            namespace,
+            depth,
+            max_nodes,
+            json,
+        } => {
+            let mut params = vec![
+                ("q", text),
+                ("depth", depth.to_string()),
+                ("max_nodes", max_nodes.to_string()),
+            ];
+            if let Some(ns) = namespace {
+                params.push(("namespace", ns));
+            }
+            let params: Vec<(&str, String)> = params;
+            let body = api.get_json_query("/v1/graph/query", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_query(&body);
+            Ok(())
+        }
+        GraphCommand::Neighbors {
+            id,
+            kind,
+            direction,
+            rel,
+            json,
+        } => {
+            let mut params = vec![
+                ("kind", kind),
+                ("id", id.to_string()),
+                ("direction", direction),
+            ];
+            if let Some(rel) = rel {
+                params.push(("rel", rel));
+            }
+            let body = api.get_json_query("/v1/graph/neighbors", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "neighbors", |row| {
+                let kind = string_field(row, "neighbor_kind", "subject");
+                let id = row.get("neighbor_id").and_then(Value::as_i64).unwrap_or(0);
+                let rel = string_field(row, "rel", "related_to");
+                let label = string_field(row, "label", "(unnamed)");
+                format!("{kind}:{id} {rel} {label}")
+            });
+            Ok(())
+        }
+        GraphCommand::Walk {
+            id,
+            kind,
+            max_depth,
+            direction,
+            rel,
+            json,
+        } => {
+            let mut params = vec![
+                ("kind", kind),
+                ("id", id.to_string()),
+                ("max_depth", max_depth.to_string()),
+                ("direction", direction),
+            ];
+            if let Some(rel) = rel {
+                params.push(("rel", rel));
+            }
+            let body = api.get_json_query("/v1/graph/walk", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "walk", |row| {
+                let kind = string_field(row, "object_kind", "subject");
+                let id = row.get("object_id").and_then(Value::as_i64).unwrap_or(0);
+                let depth = row.get("depth").and_then(Value::as_i64).unwrap_or(0);
+                let rel = string_field(row, "rel", "related_to");
+                let label = string_field(row, "label", "(unnamed)");
+                format!("{kind}:{id} d{depth} {rel} {label}")
+            });
+            Ok(())
+        }
+        GraphCommand::Path {
+            source_id,
+            target_id,
+            source_kind,
+            target_kind,
+            max_depth,
+            direction,
+            rel,
+            json,
+        } => {
+            let mut params = vec![
+                ("source_kind", source_kind),
+                ("source_id", source_id.to_string()),
+                ("target_kind", target_kind),
+                ("target_id", target_id.to_string()),
+                ("max_depth", max_depth.to_string()),
+                ("direction", direction),
+            ];
+            if let Some(rel) = rel {
+                params.push(("rel", rel));
+            }
+            let body = api.get_json_query("/v1/graph/path", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "paths", |row| {
+                let depth = row.get("depth").and_then(Value::as_i64).unwrap_or(0);
+                let hops = row
+                    .get("path")
+                    .and_then(Value::as_array)
+                    .map(|path| {
+                        path.iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" -> ")
+                    })
+                    .unwrap_or_default();
+                format!("depth {depth}: {hops}")
+            });
+            Ok(())
+        }
+        GraphCommand::Stats { json } => {
+            let body = api.get_json("/v1/graph/stats")?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            let stats = body.get("stats").unwrap_or(&Value::Null);
+            let edges = stats.get("edges").and_then(Value::as_i64).unwrap_or(0);
+            let nodes = stats.get("nodes").and_then(Value::as_i64).unwrap_or(0);
+            println!("nodes {nodes}");
+            println!("edges {edges}");
+            if let Some(stores) = stats.get("by_store").and_then(Value::as_object) {
+                for (store, count) in stores {
+                    println!("store {store} {}", count.as_i64().unwrap_or(0));
+                }
+            }
+            if let Some(rels) = stats.get("top_rels").and_then(Value::as_array) {
+                for rel in rels {
+                    let name = string_field(rel, "rel", "(none)");
+                    let count = rel.get("edges").and_then(Value::as_i64).unwrap_or(0);
+                    println!("rel {name} {count}");
+                }
+            }
+            Ok(())
+        }
+        GraphCommand::GodNodes { limit, json } => {
+            let params = vec![("limit", limit.to_string())];
+            let body = api.get_json_query("/v1/graph/god-nodes", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "god_nodes", |row| {
+                let label = string_field(row, "label", "(unnamed)");
+                let total = row.get("degree_total").and_then(Value::as_i64).unwrap_or(0);
+                let out = row.get("degree_out").and_then(Value::as_i64).unwrap_or(0);
+                let inbound = row.get("degree_in").and_then(Value::as_i64).unwrap_or(0);
+                format!("{label} total {total} out {out} in {inbound}")
+            });
+            Ok(())
+        }
+        GraphCommand::Surprises {
+            namespace,
+            limit,
+            json,
+        } => {
+            let params = vec![("namespace", namespace), ("limit", limit.to_string())];
+            let body = api.get_json_query("/v1/graph/surprises", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "surprises", |row| {
+                let src = string_field(row, "source_label", "(unnamed)");
+                let tgt = string_field(row, "target_label", "(unnamed)");
+                let rel = string_field(row, "rel", "related_to");
+                let src_comm = row
+                    .get("source_community")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let tgt_comm = row
+                    .get("target_community")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let pair = row
+                    .get("community_pair_edges")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                format!("[{src_comm}->{tgt_comm}] {src} {rel} {tgt} pair_edges {pair}")
+            });
+            Ok(())
+        }
+        GraphCommand::Communities { namespace, json } => {
+            let mut params: Vec<(&str, String)> = Vec::new();
+            if let Some(ns) = namespace {
+                params.push(("namespace", ns));
+            }
+            let body = api.get_json_query("/v1/communities", &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "communities", |row| {
+                let id = row.get("community_id").and_then(Value::as_i64).unwrap_or(0);
+                let key = row
+                    .get("community_key")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let label = string_field(row, "label", "-");
+                let members = row.get("member_count").and_then(Value::as_i64).unwrap_or(0);
+                let ns = string_field(row, "namespace", "default");
+                format!("{id} key {key} {label} members {members} {ns}")
+            });
+            Ok(())
+        }
+        GraphCommand::Members {
+            community_id,
+            limit,
+            json,
+        } => {
+            let params = vec![("limit", limit.to_string())];
+            let body =
+                api.get_json_query(&format!("/v1/communities/{community_id}/members"), &params)?;
+            if json {
+                println!("{}", compact_json(&body));
+                return Ok(());
+            }
+            print_graph_rows(&body, "members", |row| {
+                let kind = string_field(row, "object_kind", "subject");
+                let id = row.get("object_id").and_then(Value::as_i64).unwrap_or(0);
+                let label = string_field(row, "label", "(unnamed)");
+                format!("{kind}:{id} {label}")
+            });
+            Ok(())
+        }
+        GraphCommand::Import {
+            file,
+            namespace,
+            json,
+        } => {
+            let raw = fs::read_to_string(&file)
+                .with_context(|| format!("failed to read {}", file.display()))?;
+            let graph: Value = serde_json::from_str(&raw)
+                .with_context(|| format!("{} is not valid JSON", file.display()))?;
+            if graph.get("nodes").and_then(Value::as_array).is_none() {
+                bail!(
+                    "{} does not look like a graphify graph.json (no top-level \"nodes\" array)",
+                    file.display()
+                );
+            }
+            let body = serde_json::json!({ "namespace": namespace, "graph": graph });
+            let response = api.post_value("/v1/graph/import", &body)?;
+            if json {
+                println!("{}", compact_json(&response));
+                return Ok(());
+            }
+            let nodes = response.get("nodes").unwrap_or(&Value::Null);
+            let edges = response.get("edges").unwrap_or(&Value::Null);
+            let imported = nodes.get("imported").and_then(Value::as_i64).unwrap_or(0);
+            let created = nodes.get("created").and_then(Value::as_i64).unwrap_or(0);
+            let resolved = nodes.get("resolved").and_then(Value::as_i64).unwrap_or(0);
+            let edges_imported = edges.get("imported").and_then(Value::as_i64).unwrap_or(0);
+            let skipped = response
+                .get("skipped")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            println!(
+                "Imported into '{namespace}': {imported} nodes ({created} new, {resolved} updated), \
+                 {edges_imported} edges, {skipped} skipped"
+            );
+            if let Some(communities) = response.get("communities").filter(|c| !c.is_null()) {
+                let stored = communities
+                    .get("stored")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let members = communities
+                    .get("members")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                println!("Communities stored: {stored} ({members} members)");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_graph_query(body: &Value) {
+    if let Some(seeds) = body.get("seeds").and_then(Value::as_array) {
+        if seeds.is_empty() {
+            println!("No matching nodes found");
+            return;
+        }
+        for seed in seeds {
+            let name = string_field(seed, "canonical_name", "(unnamed)");
+            let score = seed.get("score").and_then(Value::as_i64).unwrap_or(0);
+            println!("seed {name} score {score}");
+        }
+    }
+    if let Some(nodes) = body.get("nodes").and_then(Value::as_array) {
+        for node in nodes {
+            let kind = string_field(node, "object_kind", "subject");
+            let id = node.get("object_id").and_then(Value::as_i64).unwrap_or(0);
+            let depth = node.get("depth").and_then(Value::as_i64).unwrap_or(0);
+            let label = string_field(node, "label", "(unnamed)");
+            println!("node {kind}:{id} d{depth} {label}");
+        }
+    }
+    if let Some(edges) = body.get("edges").and_then(Value::as_array) {
+        for edge in edges {
+            let src = edge.get("source_id").and_then(Value::as_i64).unwrap_or(0);
+            let tgt = edge.get("target_id").and_then(Value::as_i64).unwrap_or(0);
+            let rel = string_field(edge, "rel", "related_to");
+            println!("edge {src} {rel} {tgt}");
+        }
+    }
+}
+
+fn print_graph_rows(body: &Value, envelope: &str, format_row: impl Fn(&Value) -> String) {
+    let Some(rows) = body.get(envelope).and_then(Value::as_array) else {
+        println!("No {envelope} returned");
+        return;
+    };
+    if rows.is_empty() {
+        println!("No {envelope} returned");
+        return;
+    }
+    for row in rows {
+        println!("{}", format_row(row));
+    }
 }
 
 fn print_subjects(body: &Value) {
