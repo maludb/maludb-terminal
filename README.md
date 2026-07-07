@@ -116,6 +116,23 @@ maludb get note --subject-like ubuntu --all-sources           # widen beyond not
 maludb get skill pdf-processing                              # install into ~/.claude/skills/<name>
 maludb get skill pdf-processing --dest ./skills/ --force     # ...or a specific folder
 
+maludb graph query "how does token minting work" --depth 2 --max-nodes 50
+maludb graph neighbors 42 --kind subject --direction both --rel calls,imports
+maludb graph walk 42 --max-depth 4                    # multi-hop walk from a node
+maludb graph path 42 137 --max-depth 6                # paths between two nodes, shortest first
+maludb graph stats                                    # node/edge totals for the tenant graph
+maludb graph god-nodes --limit 10                     # highest-degree nodes
+maludb graph communities --namespace my-repo          # community sets
+maludb graph members 7 --limit 200                    # members of one community
+maludb graph surprises my-repo --limit 25             # cross-community edges, rarest pair first
+maludb graph import ./graph.json --namespace my-repo  # import a graphify graph.json
+
+maludb db schema malu$community                       # columns, primary key, FKs in/out
+maludb db related malu$community                      # FK neighbors + code that reads/writes it
+maludb db join-path orders customers                  # "how do I join A to B" via FK hops
+maludb db impact malu$svpor_statement                 # views/routines/triggers/code that depend on it
+maludb db refresh --schemas public,app                # re-introspect the database into the graph
+
 maludb llm catalog                     # models the server offers, per task
 maludb llm providers                   # which providers you have a key stored for
 maludb llm set-key openai              # key read from a hidden prompt (or stdin)
@@ -177,6 +194,13 @@ Sync v1 stores portable CLI settings in an internal MaluDB note named
 `malu-cli-settings` with type `malu_cli_settings`. Raw API tokens are never
 included in the synced settings blob.
 
+`maludb graph ...` targets the `/v1/graph` and `/v1/communities` endpoint
+families (maludb-python-api-server with maludb-core >= 0.102.0);
+`maludb db ...` targets `/v1/datamodel` (core >= 0.104.0). All graph and db
+subcommands accept `--json` for machine-readable output. `maludb db` relation
+names resolve to data-model graph nodes by lexical match, so plain table names
+like `orders` work without knowing node ids.
+
 ## MCP Server
 
 `maludb mcp` runs a local [Model Context Protocol](https://modelcontextprotocol.io)
@@ -203,9 +227,19 @@ The exposed tools cover notes and uploads (`note`, `doc_push`, `chat_push`),
 context (`subjects_add`/`hints_add`, `subjects_list`/`hints_list`,
 `profile_list`/`profile_show`), reads (`get_config`, `get_subjects`,
 `get_projects`, `get_documents`, `get_note`, `llm_catalog`, `llm_models`,
-`skill_list`), skills (`skill_add`, `skill_pull`, `get_skill`), sync
+`skill_list`), skills (`skill_add`, `skill_pull`, `get_skill`), the knowledge
+graph (`query_graph`, `get_neighbors`, `graph_walk`, `shortest_path`,
+`graph_stats`, `god_nodes`, `get_communities`, `get_community`,
+`graph_surprises`, `graph_import`), the data-model graph (`db_schema`,
+`db_related`, `db_join_path`, `db_impact`, `db_model_refresh`), sync
 (`sync_push`/`pull`/`status`/`diff`), and smoke tests
 (`smoke_health`/`config`/`search`/`full`).
+
+The graph tool names mirror graphify's own MCP server, so assistants already
+familiar with graphify transfer without relearning. The `db_*` tools are meant
+for coding agents working against your database: `db_schema` instead of
+guessing column names, `db_join_path` before writing multi-table SQL, and
+`db_impact` before an `ALTER` or `DROP`.
 
 For safety the server **does not** expose credential or secret mutation
 (`set-token`, `token mint`, `llm set-key`, profile/token deletion). Run those by
